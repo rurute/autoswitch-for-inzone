@@ -1,0 +1,9 @@
+# Auto Switch runtime logs (never commit)
+logs/*.log
+logs/*.log.*
+
+# Windows / editor noise
+Thumbs.db
+desktop.ini
+*.swp
+.DS_Store
