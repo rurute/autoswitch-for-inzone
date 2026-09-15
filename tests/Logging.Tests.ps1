@@ -82,4 +82,26 @@ Describe 'Write-AutoSwitchLog' {
         Initialize-AutoSwitchLog -Path 'Z:\definitely\not\here\x.log' -Level 'Info' -MaxSizeKB 1024
         { Write-AutoSwitchLog -Level Error -Message 'boom' } | Should -Not -Throw
     }
+
+    It '別プロセスが書き込み用に掴んでいてもログ行を失わない' {
+        Initialize-AutoSwitchLog -Path $script:LogFile -Level 'Info' -MaxSizeKB 1024
+        Write-AutoSwitchLog -Level Info -Message 'first line'
+
+        # 他プロセスが追記用に開いている状況を模す
+        $other = [System.IO.File]::Open(
+            $script:LogFile,
+            [System.IO.FileMode]::Append,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::ReadWrite)
+        try {
+            Write-AutoSwitchLog -Level Info -Message 'second line'
+        }
+        finally {
+            $other.Dispose()
+        }
+
+        $content = Get-Content -LiteralPath $script:LogFile -Encoding UTF8 -Raw
+        $content | Should -Match 'first line'
+        $content | Should -Match 'second line'
+    }
 }

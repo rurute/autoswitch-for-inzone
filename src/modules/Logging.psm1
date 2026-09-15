@@ -67,6 +67,40 @@ function Invoke-AutoSwitchLogRotation {
     catch { }
 }
 
+function Add-AutoSwitchLogLines {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Lines
+    )
+
+    # FileShare.ReadWrite で開く。AppendAllLines は FileShare.Read 相当で開くため、
+    # 別プロセスが書き込み用に掴んでいると共有違反になり、行が無言で失われる。
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $bytes = $encoding.GetBytes((($Lines -join "`r`n") + "`r`n"))
+
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            $stream = [System.IO.File]::Open(
+                $script:LogPath,
+                [System.IO.FileMode]::Append,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::ReadWrite)
+            try {
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush()
+            }
+            finally {
+                $stream.Dispose()
+            }
+            return
+        }
+        catch {
+            if ($attempt -ge 3) { return }
+            [System.Threading.Thread]::Sleep(20 * $attempt)
+        }
+    }
+}
+
 function Write-AutoSwitchLog {
     [CmdletBinding()]
     param(
@@ -93,8 +127,7 @@ function Write-AutoSwitchLog {
     Invoke-AutoSwitchLogRotation
 
     try {
-        $encoding = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::AppendAllLines($script:LogPath, [string[]]$lines.ToArray(), $encoding)
+        Add-AutoSwitchLogLines -Lines $lines.ToArray()
     }
     catch { }
 }

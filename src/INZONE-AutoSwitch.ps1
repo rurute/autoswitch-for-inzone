@@ -55,14 +55,21 @@ try {
     $context = Invoke-StartupSync -Config $config -Context $context
 
     while ($true) {
-        Start-Sleep -Seconds $context.NextDelaySeconds
         try {
+            $delaySeconds = [int]$context.NextDelaySeconds
+            if ($delaySeconds -lt 1) { $delaySeconds = 1 }
+            if ($delaySeconds -gt 3600) { $delaySeconds = 3600 }
+            Start-Sleep -Seconds $delaySeconds
+
             $context = Invoke-AutoSwitchTick -Config $config -Context $context
         }
         catch {
-            # tick は原則として例外を投げない設計だが、万一漏れても常駐を止めない
+            # tick も待機も原則として例外を投げない設計だが、万一漏れても常駐を止めない。
+            # ここで固定 5 秒眠るのは、待機自体が失敗し続けた場合に高頻度ループへ落ちないため。
+            # Thread.Sleep は正の int に対して例外を投げないので、この退避路自体は失敗しない。
             Write-AutoSwitchLog -Level Error -Message "予期しない例外が発生しました: $($_.Exception.Message)"
             $context.NextDelaySeconds = $config.idlePollIntervalSeconds
+            [System.Threading.Thread]::Sleep(5000)
         }
     }
 }

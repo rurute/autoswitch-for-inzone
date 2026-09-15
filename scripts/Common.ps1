@@ -20,7 +20,7 @@ function Stop-AutoSwitchProcess {
 
     try {
         $processes = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction Stop |
-            Where-Object { $_.CommandLine -like '*INZONE-AutoSwitch.ps1*' })
+            Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*INZONE-AutoSwitch.ps1*' })
 
         foreach ($process in $processes) {
             Write-Host "実行中の INZONE Auto Switch を停止します (PID $($process.ProcessId))"
