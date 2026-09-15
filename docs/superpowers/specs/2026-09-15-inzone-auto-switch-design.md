@@ -171,11 +171,12 @@ Read-ActionLogLines -State <hashtable> -> @{ State; Lines; Status }
 ```
 
 - ファイル未存在: `Offset=0` にリセットし `FileMissing` を返す
-- `Length < Offset`: truncate とみなし `Offset=0` から全読み、`Truncated` を返す
+- `Length < Offset` **または** `Length < 前回の LastLength`: truncate とみなし `Offset=0` から全読み、`Truncated` を返す。後者は、truncate 直後に Hub が大量追記してポーリング前に `Length >= Offset` へ戻ってしまう競合を拾うため
 - `CreationTimeUtc` が前回と異なる: 再生成とみなし `Offset=0` から全読み、`Recreated` を返す
 - `Length > Offset`: `Offset` から末尾までを読む
 - **バイト境界で処理する**。読み出したバッファ中の最後の `0x0A` までを 1 行以上として確定し、`Offset` は `最後のLF位置+1` までしか進めない。行の途中で読んだ分は次回に持ち越す
 - 各行の先頭 BOM（U+FEFF）と `\r` は除去する
+- 1 回の読み出しは最大 4MB に制限する。それを超える差分は次の tick へ持ち越す（巨大ファイル出現時のメモリ確保を防ぐ）
 - `FileShare.ReadWrite, Delete` で開く。IO 例外は捕捉して `Error` を返す（呼び出し側がバックオフする）
 - 依存: ファイルシステムのみ。テストは一時ファイルで完結する
 
@@ -277,7 +278,7 @@ Read-ActionLogLines
                     └─ 対応する switch フラグが false        → 状態のみ更新
 ```
 
-イベントが 1 tick に複数含まれる場合は `TimeStampMs` の昇順で順に適用する。結果として最後の遷移だけがデバイス切り替えを起こす。
+イベントが 1 tick に複数含まれる場合は、`SonyEventProvider` が返した順（= ファイルへの追記順 = 時系列順）にそのまま適用する。PowerShell 5.1 の `Sort-Object` は安定ソートではなく、同一ミリ秒のイベント順を壊しうるため並べ替えない。結果として最後の遷移だけがデバイス切り替えを起こす。
 
 ### 5.2 手動変更の尊重
 
@@ -316,7 +317,7 @@ Read-ActionLogLines
 | Hub が後から起動 | Idle ポーリングで待機し、ログ出現後に自動で通常監視へ |
 | ActionLog.log が未存在 | `FileMissing`。状態は保持、Idle 間隔 |
 | 削除・再作成 | `CreationTimeUtc` の変化で検知、`Offset=0` から再読。`logId` 重複排除で二重発火しない |
-| truncate | `Length < Offset` で検知、`Offset=0` から再読。同上 |
+| truncate | `Length < Offset` または `Length < 前回の LastLength` で検知、`Offset=0` から再読。同上 |
 | 一時的なファイルアクセス失敗 | 例外を捕捉、`ConsecutiveErrors` を加算して指数バックオフ。成功でリセット |
 | AudioDeviceCmdlets が無い | 起動時に Warn 1 回。切替要求のたびに再 Import を試行し、後から導入されれば自動復帰 |
 | デバイス名が存在しない | `DeviceNotFound` を Warn。ループは継続。内部状態は遷移済みとして記録する（再試行で暴れない） |
@@ -331,7 +332,7 @@ Read-ActionLogLines
 ```
 成功            : NextDelay = pollIntervalSeconds
 FileMissing     : NextDelay = idlePollIntervalSeconds
-Error (n 回連続): NextDelay = min(pollIntervalSeconds * 2^n, 60)
+Error (n 回連続): NextDelay = min(pollIntervalSeconds * 2^(n-1), 60)
 ```
 
 `Error` から 1 回でも成功したら `ConsecutiveErrors = 0` に戻す。
@@ -461,6 +462,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\wsl.localhost\Ubuntu\
 - 2 回目は追記分のみを返す
 - 末尾が改行で終わらない場合、途中行を返さず `Offset` も進めない。次回に追記が完結したら 1 行として返す
 - truncate（`Length < Offset`）の検知と全読み
+- 縮小したが `Length >= Offset` のままの truncate（`Length < LastLength`）も検知する
 - 削除 → 再生成（`CreationTimeUtc` 変化）の検知と全読み
 - ファイル未存在で `FileMissing`、状態がリセットされる
 - UTF-8 BOM が除去される
