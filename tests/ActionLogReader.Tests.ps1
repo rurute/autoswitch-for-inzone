@@ -31,10 +31,10 @@ Describe 'ActionLogReader' {
     Describe 'New-ActionLogReaderState' {
         It '初期状態を返す' {
             $s = New-ActionLogReaderState -Path $script:Path
-            $s.Path                | Should -Be $script:Path
-            $s.Offset              | Should -Be 0
-            $s.LastLength          | Should -Be 0
-            $s.LastCreationTimeUtc | Should -BeNullOrEmpty
+            $s.Path            | Should -Be $script:Path
+            $s.Offset          | Should -Be 0
+            $s.LastLength      | Should -Be 0
+            $s.HeadFingerprint | Should -Be ''
         }
     }
 
@@ -43,10 +43,12 @@ Describe 'ActionLogReader' {
         It 'ファイルが無ければ FileMissing を返して状態をリセットする' {
             $s = New-ActionLogReaderState -Path $script:Path
             $s.Offset = 999
+            $s.HeadFingerprint = 'stale'
             $r = Read-ActionLogLines -State $s
-            $r.Status       | Should -Be 'FileMissing'
-            @($r.Lines).Count | Should -Be 0
-            $r.State.Offset | Should -Be 0
+            $r.Status                | Should -Be 'FileMissing'
+            @($r.Lines).Count        | Should -Be 0
+            $r.State.Offset          | Should -Be 0
+            $r.State.HeadFingerprint | Should -Be ''
         }
 
         It '初回は全行を返す' {
@@ -73,6 +75,33 @@ Describe 'ActionLogReader' {
             $r = Read-ActionLogLines -State $s
             $r.Status         | Should -Be 'Ok'
             @($r.Lines).Count | Should -Be 0
+        }
+
+        It '通常の追記を Recreated と誤判定しない' {
+            Set-LogContent -Path $script:Path -Text "aaa`n"
+            $s = New-ActionLogReaderState -Path $script:Path
+            Read-ActionLogLines -State $s | Out-Null
+
+            foreach ($i in 1..5) {
+                Add-LogContent -Path $script:Path -Text ("line{0}`n" -f $i)
+                $r = Read-ActionLogLines -State $s
+                $r.Status   | Should -Be 'Ok'
+                @($r.Lines) | Should -Be @(("line{0}" -f $i))
+            }
+        }
+
+        It '既読オフセットが指紋長 256 バイトを超えても追記を正しく読み続ける' {
+            $long = ('x' * 400)
+            Set-LogContent -Path $script:Path -Text "$long`n"
+            $s = New-ActionLogReaderState -Path $script:Path
+            $r = Read-ActionLogLines -State $s
+            @($r.Lines) | Should -Be @($long)
+            $s.Offset | Should -BeGreaterThan 256
+
+            Add-LogContent -Path $script:Path -Text "after`n"
+            $r2 = Read-ActionLogLines -State $s
+            $r2.Status   | Should -Be 'Ok'
+            @($r2.Lines) | Should -Be @('after')
         }
 
         It '改行で終わっていない末尾行は返さずオフセットも進めない' {
@@ -112,6 +141,8 @@ Describe 'ActionLogReader' {
         }
 
         It '削除して作り直されたら Recreated を返して先頭から読み直す' {
+            # 削除の 50ms 後に作り直す。NTFS の file system tunneling により
+            # CreationTimeUtc は元の値のまま復元されるので、作成日時では検知できない窓。
             Set-LogContent -Path $script:Path -Text "old1`nold2`n"
             $s = New-ActionLogReaderState -Path $script:Path
             Read-ActionLogLines -State $s | Out-Null
@@ -123,6 +154,19 @@ Describe 'ActionLogReader' {
             $r = Read-ActionLogLines -State $s
             $r.Status   | Should -Be 'Recreated'
             @($r.Lines) | Should -Be @('new1', 'new2', 'new3')
+        }
+
+        It 'truncate されて元より長い別内容に差し替わっても先頭から読み直す' {
+            # Length も CreationTime も手がかりにならない最悪ケース。
+            # 指紋が無ければ古いオフセットから別内容の途中を「続き」として返してしまう。
+            Set-LogContent -Path $script:Path -Text "old1`nold2`n"
+            $s = New-ActionLogReaderState -Path $script:Path
+            Read-ActionLogLines -State $s | Out-Null
+
+            Set-LogContent -Path $script:Path -Text "new1`nnew2`nnew3`nnew4`n"
+            $r = Read-ActionLogLines -State $s
+            $r.Status   | Should -Be 'Recreated'
+            @($r.Lines) | Should -Be @('new1', 'new2', 'new3', 'new4')
         }
 
         It 'UTF-8 BOM を除去する' {
