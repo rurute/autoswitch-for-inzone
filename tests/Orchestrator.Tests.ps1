@@ -323,24 +323,29 @@ Describe 'Orchestrator' {
         }
 
         It '長時間のギャップを検知したらバックオフをリセットする（スリープ復帰）' {
+            # ロックを掴んだまま時刻を進めるのが要点。ギャップ後の tick でも読み取りは
+            # 失敗し続けるので、通常の成功経路によるリセットと区別できる。
+            # ブロッカーを先に解放してしまうと、ギャップ検知を丸ごと削除しても
+            # このテストは通ってしまい、何も証明しない。
             Write-LogLines -Lines @()
             $ctx = New-AutoSwitchContext -Config $script:Config
 
             $blocker = [System.IO.File]::Open($script:LogPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
             try {
                 foreach ($i in 1..5) { $ctx = Invoke-AutoSwitchTick -Config $script:Config -Context $ctx }
-                $ctx.ConsecutiveErrors | Should -BeGreaterThan 1
+                $ctx.ConsecutiveErrors | Should -Be 5
+                $ctx.NextDelaySeconds  | Should -Be 16
+
+                # 1 時間後に復帰。ギャップ検知が無ければ 6 回目のエラーとして 32 秒になる
+                $script:NowUtc = $script:NowUtc.AddHours(1)
+                $ctx = Invoke-AutoSwitchTick -Config $script:Config -Context $ctx
+
+                $ctx.ConsecutiveErrors | Should -Be 1
+                $ctx.NextDelaySeconds  | Should -Be 1
             }
             finally {
                 $blocker.Dispose()
             }
-
-            # 1 時間後に復帰
-            $script:NowUtc = $script:NowUtc.AddHours(1)
-            $ctx = Invoke-AutoSwitchTick -Config $script:Config -Context $ctx
-
-            $ctx.ConsecutiveErrors | Should -Be 0
-            $ctx.NextDelaySeconds  | Should -Be $script:Config.pollIntervalSeconds
         }
 
         It '切り替えが DeviceNotFound でも状態は遷移済みとして記録し再試行で暴れない' {
