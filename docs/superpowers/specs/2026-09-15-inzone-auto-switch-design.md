@@ -504,6 +504,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\wsl.localhost\Ubuntu\
 - 名前が一覧に無いとき `DeviceNotFound`、`Set-AudioDevice` は呼ばれない
 - `Playback` 以外の同名デバイスを選ばない
 - モジュール未導入のとき `ModuleUnavailable` を返し例外を投げない
+- `Get-DefaultPlaybackDeviceName` はモジュール未導入のとき `Get-AudioDevice` を**呼ばずに** `$null` を返す
+- `Test-AudioSwitcherAvailable` 自体を直接テストする: コマンドが既に解決できる場合 / 解決できないが
+  `Import-Module` が成功する場合 / `Import-Module` が失敗する場合の 3 経路
 - `Set-AudioDevice` が例外を投げたとき `Error` を返し例外を外に漏らさない
 
 **Orchestrator.Tests.ps1**（AudioSwitcher を Mock、ActionLog は一時ファイル）
