@@ -524,6 +524,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\wsl.localhost\Ubuntu\
 - ファイル未存在 tick で `NextDelaySeconds = idlePollIntervalSeconds`
 - 読み取りエラー連続で遅延が 1→2→4 と伸び、上限 60 で頭打ちになる
 - エラー後に成功したら遅延が `pollIntervalSeconds` に戻る
+- **読み取りが失敗し続けている最中**に 5 分超のギャップを検知したら、バックオフがリセットされる
+  （通常の成功によるリセットと区別できる形で検証すること。成功経路と混ざるとギャップ検知を
+  削除してもテストが通ってしまう）
 
 ### 9.2 fixture
 
