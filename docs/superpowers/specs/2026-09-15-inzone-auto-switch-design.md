@@ -168,14 +168,18 @@ Write-AutoSwitchLog -Level <Debug|Info|Warn|Error> -Message <string>
 
 ```
 New-ActionLogReaderState -Path <string> -> hashtable
-    @{ Path; Offset; LastLength; LastCreationTimeUtc }
+    @{ Path; Offset; LastLength; HeadFingerprint }
 Read-ActionLogLines -State <hashtable> -> @{ State; Lines; Status }
     Status: 'Ok' | 'FileMissing' | 'Truncated' | 'Recreated' | 'Error'
 ```
 
 - ファイル未存在: `Offset=0` にリセットし `FileMissing` を返す
 - `Length < Offset` **または** `Length < 前回の LastLength`: truncate とみなし `Offset=0` から全読み、`Truncated` を返す。後者は、truncate 直後に Hub が大量追記してポーリング前に `Length >= Offset` へ戻ってしまう競合を拾うため
-- `CreationTimeUtc` が前回と異なる: 再生成とみなし `Offset=0` から全読み、`Recreated` を返す
+- 既読部分の**先頭バイト指紋**が前回と異なる: ファイルが差し替わったとみなし `Offset=0` から全読み、`Recreated` を返す
+  - 指紋は先頭 `min(256, Offset)` バイトの Base64。既読範囲に限るので、通常の追記では変化しない
+  - **`CreationTimeUtc` は使えない。** NTFS の file system tunneling により、削除後 15 秒以内に同名で
+    作り直すと作成日時が復元される（実機で計測して確認済み）。作成日時だけに頼ると、古いオフセットの
+    まま別内容のファイルを読み進めて無言でデータを破損する
 - `Length > Offset`: `Offset` から末尾までを読む
 - **バイト境界で処理する**。読み出したバッファ中の最後の `0x0A` までを 1 行以上として確定し、`Offset` は `最後のLF位置+1` までしか進めない。行の途中で読んだ分は次回に持ち越す
 - 各行の先頭 BOM（U+FEFF）と `\r` は除去する
@@ -319,7 +323,7 @@ Read-ActionLogLines
 | 多重起動 | 名前付き Mutex `Local\INZONE-AutoSwitch`。取得失敗で Info ログ 1 行を残し即終了 |
 | Hub が後から起動 | Idle ポーリングで待機し、ログ出現後に自動で通常監視へ |
 | ActionLog.log が未存在 | `FileMissing`。状態は保持、Idle 間隔 |
-| 削除・再作成 | `CreationTimeUtc` の変化で検知、`Offset=0` から再読。`logId` 重複排除で二重発火しない |
+| 削除・再作成 | 既読部分の先頭バイト指紋の変化で検知、`Offset=0` から再読。`logId` 重複排除で二重発火しない |
 | truncate | `Length < Offset` または `Length < 前回の LastLength` で検知、`Offset=0` から再読。同上 |
 | 一時的なファイルアクセス失敗 | 例外を捕捉、`ConsecutiveErrors` を加算して指数バックオフ。成功でリセット |
 | AudioDeviceCmdlets が無い | 起動時に Warn 1 回。切替要求のたびに再 Import を試行し、後から導入されれば自動復帰 |
@@ -466,7 +470,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\wsl.localhost\Ubuntu\
 - 末尾が改行で終わらない場合、途中行を返さず `Offset` も進めない。次回に追記が完結したら 1 行として返す
 - truncate（`Length < Offset`）の検知と全読み
 - 縮小したが `Length >= Offset` のままの truncate（`Length < LastLength`）も検知する
-- 削除 → 再生成（`CreationTimeUtc` 変化）の検知と全読み
+- 削除 → 再生成（先頭バイト指紋の変化）の検知と全読み。**削除の 50ms 後に作り直しても検知できること**
+  （NTFS の file system tunneling で作成日時が復元される窓の中）
+- truncate 後に元より長い別内容へ差し替わっても `Recreated` として先頭から読み直す
+- 通常の追記では `Recreated` と誤判定しない
 - ファイル未存在で `FileMissing`、状態がリセットされる
 - UTF-8 BOM が除去される
 - CRLF の `\r` が除去される
