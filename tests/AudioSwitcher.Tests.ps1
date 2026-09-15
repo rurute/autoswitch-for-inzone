@@ -120,8 +120,39 @@ Describe 'Get-DefaultPlaybackDeviceName' {
         $script:r | Should -BeNullOrEmpty
     }
 
-    It 'モジュールが使えないときは $null を返す' {
+    It 'モジュールが使えないときは $null を返し Get-AudioDevice を呼ばない' {
+        # 呼ばれないことまで見ないと、可用性チェックを無視する実装でも
+        # catch 経由で $null が返って素通りしてしまう
         Mock -ModuleName AudioSwitcher Test-AudioSwitcherAvailable { return $false }
+        Mock -ModuleName AudioSwitcher Get-AudioDevice {
+            param($List, $Playback, $Recording, $ID, $Index)
+        }
         Get-DefaultPlaybackDeviceName | Should -BeNullOrEmpty
+        Should -Invoke -ModuleName AudioSwitcher Get-AudioDevice -Times 0 -Exactly
+    }
+}
+
+Describe 'Test-AudioSwitcherAvailable' {
+
+    It 'コマンドが既に解決できれば true を返し Import-Module を呼ばない' {
+        Mock -ModuleName AudioSwitcher Import-Module { }
+        Test-AudioSwitcherAvailable | Should -BeTrue
+        Should -Invoke -ModuleName AudioSwitcher Import-Module -Times 0 -Exactly
+    }
+
+    It 'コマンドが解決できなくても Import-Module が成功すれば true を返す' {
+        # Get-Command そのものは Pester も使うので、対象コマンド名に限って差し替える
+        Mock -ModuleName AudioSwitcher Get-Command -ParameterFilter { $Name -eq 'Get-AudioDevice' } -MockWith { return $null }
+        Mock -ModuleName AudioSwitcher Import-Module { }
+        Test-AudioSwitcherAvailable | Should -BeTrue
+        Should -Invoke -ModuleName AudioSwitcher Import-Module -Times 1 -Exactly
+    }
+
+    It 'Import-Module が失敗したら false を返し例外を漏らさない' {
+        Mock -ModuleName AudioSwitcher Get-Command -ParameterFilter { $Name -eq 'Get-AudioDevice' } -MockWith { return $null }
+        Mock -ModuleName AudioSwitcher Import-Module { throw 'module not found' }
+        $r = 'sentinel'
+        { $script:r = Test-AudioSwitcherAvailable } | Should -Not -Throw
+        $script:r | Should -BeFalse
     }
 }
