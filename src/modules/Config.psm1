@@ -108,4 +108,21 @@ function Read-AutoSwitchConfig {
     return @{ Config = $config; Warnings = @($warnings.ToArray()) }
 }
 
-Export-ModuleMember -Function Get-AutoSwitchConfigDefault, Read-AutoSwitchConfig
+function Resolve-AutoSwitchAppRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptRoot
+    )
+
+    # config.json を持つディレクトリをアプリルートとみなす。
+    # インストール後はスクリプトと同じ場所、開発時は src\ の 1 つ上にある。
+    $candidates = @($ScriptRoot, (Split-Path -Parent $ScriptRoot))
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        if (Test-Path -LiteralPath (Join-Path $candidate 'config.json') -PathType Leaf) { return $candidate }
+    }
+
+    return $ScriptRoot
+}
+
+Export-ModuleMember -Function Get-AutoSwitchConfigDefault, Read-AutoSwitchConfig, Resolve-AutoSwitchAppRoot

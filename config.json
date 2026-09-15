@@ -1,0 +1,12 @@
+﻿{
+  "budsDevice": "スピーカー (INZONE Buds - Game)",
+  "speakerDevice": "スピーカー (Realtek(R) Audio)",
+  "switchOnConnect": true,
+  "switchOnDisconnect": true,
+  "actionLogPath": "%APPDATA%\\Sony\\INZONE Hub\\ActionLog.log",
+  "pollIntervalSeconds": 1,
+  "idlePollIntervalSeconds": 5,
+  "startupSyncMaxAgeMinutes": 10,
+  "logLevel": "Info",
+  "maxLogSizeKB": 1024
+}
