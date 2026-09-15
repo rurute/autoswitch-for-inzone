@@ -115,6 +115,8 @@ inzone-auto-switch/
 │       └── Orchestrator.psm1
 ├── tests/
 │   ├── fixtures/
+│   ├── stubs/
+│   ├── AppRoot.Tests.ps1
 │   ├── Config.Tests.ps1
 │   ├── Logging.Tests.ps1
 │   ├── ActionLogReader.Tests.ps1
@@ -123,6 +125,7 @@ inzone-auto-switch/
 │   ├── AudioSwitcher.Tests.ps1
 │   └── Orchestrator.Tests.ps1
 ├── scripts/
+│   ├── Common.ps1
 │   ├── Install.ps1
 │   ├── Uninstall.ps1
 │   ├── Install-DevDependencies.ps1
