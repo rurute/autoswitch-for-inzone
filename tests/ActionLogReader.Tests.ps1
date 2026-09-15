@@ -202,14 +202,35 @@ Describe 'ActionLogReader' {
             @($r2.Lines) | Should -Be @('スピーカー (Realtek(R) Audio)')
         }
 
+        It '同じ長さの別内容へ差し替えられても検知する' {
+            # Length も CreationTime も手がかりにならず、長さが一致するため
+            # 「変化が無ければ開かない」最適化があるとここで永久にすり抜ける
+            Set-LogContent -Path $script:Path -Text "old1`nold2`n"
+            $s = New-ActionLogReaderState -Path $script:Path
+            Read-ActionLogLines -State $s | Out-Null
+
+            Set-LogContent -Path $script:Path -Text "new1`nnew2`n"   # 同一バイト長
+            $r = Read-ActionLogLines -State $s
+            $r.Status   | Should -Be 'Recreated'
+            @($r.Lines) | Should -Be @('new1', 'new2')
+        }
+
         It '読み取りが失敗したら Error を返し例外を漏らさない' {
+            # Mock ではなく実際の排他ロックで失敗させる。
+            # FileShare.None で開かれていると、こちらの ReadWrite|Delete 要求は IOException になる。
             Set-LogContent -Path $script:Path -Text "aaa`n"
             $s = New-ActionLogReaderState -Path $script:Path
-            Mock -ModuleName ActionLogReader Get-Item { throw 'simulated IO failure' }
-            $r = $null
-            { $script:r = Read-ActionLogLines -State $s } | Should -Not -Throw
-            $script:r.Status  | Should -Be 'Error'
-            $script:r.Message | Should -Match 'simulated IO failure'
+
+            $blocker = [System.IO.File]::Open($script:Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+            try {
+                $r = $null
+                { $script:r = Read-ActionLogLines -State $s } | Should -Not -Throw
+                $script:r.Status  | Should -Be 'Error'
+                $script:r.Message | Should -Not -BeNullOrEmpty
+            }
+            finally {
+                $blocker.Dispose()
+            }
         }
     }
 }

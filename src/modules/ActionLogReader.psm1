@@ -58,19 +58,14 @@ function Read-ActionLogLines {
     $result = @{ State = $State; Lines = @(); Status = 'Ok'; Message = '' }
     $path = $State.Path
 
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        $State.Offset = [long]0
-        $State.LastLength = [long]0
-        $State.HeadFingerprint = ''
-        $result.Status = 'FileMissing'
-        return $result
-    }
-
     $stream = $null
     try {
-        # 変化が無ければ開かない。1 秒ポーリングでの無駄な I/O を避ける
-        $statLength = [long](Get-Item -LiteralPath $path -Force).Length
-        if ($statLength -eq $State.LastLength -and $statLength -le $State.Offset) {
+        # Test-Path も try の中に置く。ここで例外が出ても外へ漏らさないため
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            $State.Offset = [long]0
+            $State.LastLength = [long]0
+            $State.HeadFingerprint = ''
+            $result.Status = 'FileMissing'
             return $result
         }
 
@@ -78,15 +73,19 @@ function Read-ActionLogLines {
         $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
         $length = [long]$stream.Length
 
+        # 長さが同じでも必ず指紋を照合する。「変化が無ければ開かない」最適化は、
+        # 同じ長さの別内容への差し替えを永久に見逃すので入れてはいけない
         $status = 'Ok'
         if ($length -lt $State.Offset -or $length -lt $State.LastLength) {
             $State.Offset = [long]0
+            $State.HeadFingerprint = ''
             $status = 'Truncated'
         }
         elseif ($State.Offset -gt 0) {
             $current = Get-HeadFingerprint -Stream $stream -Offset $State.Offset
             if ($current -ne $State.HeadFingerprint) {
                 $State.Offset = [long]0
+                $State.HeadFingerprint = ''
                 $status = 'Recreated'
             }
         }
@@ -94,7 +93,6 @@ function Read-ActionLogLines {
         $State.LastLength = $length
 
         if ($length -le $State.Offset) {
-            $State.HeadFingerprint = Get-HeadFingerprint -Stream $stream -Offset $State.Offset
             $result.Status = $status
             return $result
         }
