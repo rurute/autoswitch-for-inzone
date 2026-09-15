@@ -183,6 +183,8 @@ Read-ActionLogLines -State <hashtable> -> @{ State; Lines; Status }
 - `Length > Offset`: `Offset` から末尾までを読む
 - **バイト境界で処理する**。読み出したバッファ中の最後の `0x0A` までを 1 行以上として確定し、`Offset` は `最後のLF位置+1` までしか進めない。行の途中で読んだ分は次回に持ち越す
 - 各行の先頭 BOM（U+FEFF）と `\r` は除去する
+- **長さが変わっていなくても毎回ファイルを開いて指紋を照合する。** 「長さが同じなら開かない」最適化は、
+  同じ長さの別内容へ差し替えられた場合にすり抜け、そのファイルが二度と伸びなければ永久に検知できない
 - 1 回の読み出しは最大 4MB に制限する。それを超える差分は次の tick へ持ち越す（巨大ファイル出現時のメモリ確保を防ぐ）
 - `FileShare.ReadWrite, Delete` で開く。IO 例外は捕捉して `Error` を返す（呼び出し側がバックオフする）
 - 依存: ファイルシステムのみ。テストは一時ファイルで完結する
@@ -473,6 +475,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\wsl.localhost\Ubuntu\
 - 削除 → 再生成（先頭バイト指紋の変化）の検知と全読み。**削除の 50ms 後に作り直しても検知できること**
   （NTFS の file system tunneling で作成日時が復元される窓の中）
 - truncate 後に元より長い別内容へ差し替わっても `Recreated` として先頭から読み直す
+- **同じバイト長**の別内容へ差し替えられても `Recreated` として検知する
 - 通常の追記では `Recreated` と誤判定しない
 - ファイル未存在で `FileMissing`、状態がリセットされる
 - UTF-8 BOM が除去される
