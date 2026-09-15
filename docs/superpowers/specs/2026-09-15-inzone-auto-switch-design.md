@@ -425,6 +425,8 @@ Error (n 回連続): NextDelay = min(pollIntervalSeconds * 2^(n-1), 60)
 
 `launch-hidden.vbs` は `WScript.Shell.Run` をウィンドウスタイル `0`、待機なしで呼ぶだけの数行。これにより `powershell.exe` のコンソールが一瞬もちらつかない。
 
+このファイルは **BOM 無し**で保存するため `wscript.exe` は ANSI として読む。したがって**コメントも含めて ASCII のみ**にする。
+
 ```
 powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "<root>\INZONE-AutoSwitch.ps1"
 ```
