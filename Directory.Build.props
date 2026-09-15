@@ -1,0 +1,17 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!--
+    WSL 上のリポジトリを Windows の dotnet.exe で UNC パス経由でビルドすると、
+    bin への apphost (*.exe) の書き出しが 9P 上でアクセス拒否（MSB3021）になる。
+    UNC からのビルドのときだけ、出力を Windows 側のディスクへ逃がす。通常のパスでのビルドには影響しない。
+  -->
+  <PropertyGroup Condition="$(MSBuildThisFileDirectory.StartsWith('\\'))">
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath>$(LOCALAPPDATA)\AutoSwitchForInzone-build</ArtifactsPath>
+  </PropertyGroup>
+</Project>

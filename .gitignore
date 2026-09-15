@@ -2,6 +2,16 @@
 logs/*.log
 logs/*.log.*
 
+# Brainstorming visual companion
+.superpowers/
+
+# .NET build output (UNC builds go to %LOCALAPPDATA%\AutoSwitchForInzone-build instead)
+bin/
+obj/
+artifacts/
+.vs/
+*.user
+
 # Windows / editor noise
 Thumbs.db
 desktop.ini
