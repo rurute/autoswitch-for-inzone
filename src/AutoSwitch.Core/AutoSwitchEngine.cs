@@ -60,6 +60,10 @@ public sealed class AutoSwitchEngine
     private const int MaxBackoffSeconds = 60;
     private const int ResumeGapSeconds = 300;
 
+    // DateTimeOffset.FromUnixTimeMilliseconds が受け付ける範囲（0001-01-01Z 〜 9999-12-31T23:59:59.999Z）
+    private const long MinUnixMilliseconds = -62135596800000L;
+    private const long MaxUnixMilliseconds = 253402300799999L;
+
     private readonly AppSettings _settings;
     private readonly IAppLogger _logger;
     private readonly IPlaybackSwitcher _switcher;
@@ -88,11 +92,36 @@ public sealed class AutoSwitchEngine
 
     public HeadsetState State { get; private set; } = HeadsetState.Unknown;
 
+    /// <summary>状態が実際に変わったときだけ発火する。監視スレッドから呼ばれる</summary>
+    public event EventHandler<HeadsetState>? StateChanged;
+
+    private void SetState(HeadsetState newState)
+    {
+        if (State == newState)
+        {
+            return;
+        }
+
+        State = newState;
+
+        try
+        {
+            StateChanged?.Invoke(this, newState);
+        }
+        catch (Exception ex)
+        {
+            // 表示側の失敗で監視と切り替えを止めない
+            _logger.Write(LogLevel.Error, $"状態変更の通知で予期しない例外が発生しました: {ex.Message}");
+        }
+    }
+
     public int ConsecutiveErrors { get; private set; }
 
     public int NextDelaySeconds { get; private set; }
 
-    public void StartupSync()
+    public void StartupSync() => StartupSync(CancellationToken.None);
+
+    public void StartupSync(CancellationToken token)
     {
         var read = _reader.Read();
         _lastTickUtc = _clock.UtcNow;
@@ -109,6 +138,11 @@ public sealed class AutoSwitchEngine
             _logger.Write(LogLevel.Warn, $"起動時同期: ActionLog.log を読めません: {read.Message}");
             NextDelaySeconds = _settings.IdlePollIntervalSeconds;
             return;
+        }
+
+        if (read.Status == ReadStatus.Skipped)
+        {
+            _logger.Write(LogLevel.Warn, $"ActionLog.log の完結しない行が上限に達したため読み飛ばしました: {read.Message}");
         }
 
         // 採用可否にかかわらず、読んだ行はすべて既読として登録する。
@@ -136,7 +170,14 @@ public sealed class AutoSwitchEngine
         }
 
         var lastEvent = events[^1];
-        // 範囲外の timeStamp は旧版の ConvertFrom-EpochMilliseconds と同じく例外になる
+        if (lastEvent.TimeStampMs < MinUnixMilliseconds || lastEvent.TimeStampMs > MaxUnixMilliseconds)
+        {
+            // 旧版は変換の例外でそのまま落ちる。常駐を止めないため、ここで弾いて切り替えないだけにする（S2）
+            _logger.Write(LogLevel.Warn, $"起動時同期: 最終イベントの時刻が範囲外です（{lastEvent.TimeStampMs}）。切り替えません。");
+            return;
+        }
+
+        // ここへ来る timeStamp は上で範囲を確認済み（旧版の ConvertFrom-EpochMilliseconds は範囲外で例外になる）
         var eventUtc = DateTimeOffset.FromUnixTimeMilliseconds(lastEvent.TimeStampMs).UtcDateTime;
         var nowUtc = _clock.UtcNow;
 
@@ -154,12 +195,20 @@ public sealed class AutoSwitchEngine
             return;
         }
 
-        State = lastEvent.State;
+        if (token.IsCancellationRequested)
+        {
+            _logger.Write(LogLevel.Info, "終了が要求されたため、起動時同期の切り替えを行いません。");
+            return;
+        }
+
+        SetState(lastEvent.State);
         _logger.Write(LogLevel.Info, $"起動時同期: 現在の状態を {lastEvent.State} と判定しました。");
         SwitchFor(lastEvent.State);
     }
 
-    public void Tick()
+    public void Tick() => Tick(CancellationToken.None);
+
+    public void Tick(CancellationToken token)
     {
         var nowUtc = _clock.UtcNow;
         if (_lastTickUtc is not null && (nowUtc - _lastTickUtc.Value).TotalSeconds > ResumeGapSeconds)
@@ -196,6 +245,10 @@ public sealed class AutoSwitchEngine
         {
             _logger.Write(LogLevel.Info, "ActionLog.log の再生成を検知しました。先頭から読み直します。");
         }
+        else if (read.Status == ReadStatus.Skipped)
+        {
+            _logger.Write(LogLevel.Warn, $"ActionLog.log の完結しない行が上限に達したため読み飛ばしました: {read.Message}");
+        }
 
         ConsecutiveErrors = 0;
         NextDelaySeconds = _settings.PollIntervalSeconds;
@@ -203,6 +256,14 @@ public sealed class AutoSwitchEngine
         // 追記順がそのまま時系列順なので並べ替えない
         foreach (var hubEvent in HubEventParser.Parse(read.Lines, _seenLogIds))
         {
+            // 終了が要求されたら残りは処理しない。1回の読み取りは最大 4 MiB 分の
+            // イベントを含みうるので、ここで止めないと終了後も切り替えが続く
+            if (token.IsCancellationRequested)
+            {
+                _logger.Write(LogLevel.Info, "終了が要求されたため、残りのイベントの処理を中止します。");
+                break;
+            }
+
             var (changed, newState) = StateTransition.Resolve(State, hubEvent.State);
             if (!changed)
             {
@@ -210,7 +271,7 @@ public sealed class AutoSwitchEngine
                 continue;
             }
 
-            State = newState;
+            SetState(newState);
             _logger.Write(LogLevel.Info, $"状態遷移を検知しました: {newState}");
             SwitchFor(newState);
         }

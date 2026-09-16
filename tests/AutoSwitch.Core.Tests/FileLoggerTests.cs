@@ -306,4 +306,32 @@ public sealed class FileLoggerTests : IDisposable
         Assert.Contains("first line", lines[0]);
         Assert.Contains("second line", lines[1]);
     }
+
+    // F5: ロックを Monitor.TryEnter へ変えても、並行して書いた行が壊れたり落ちたりしない
+    [Fact]
+    public void Write_FromManyThreads_KeepsEveryLine()
+    {
+        const int threads = 16;
+        const int linesPerThread = 50;
+        var logger = new FileLogger(_path, LogLevel.Info, maxSizeKB: 1024);
+
+        Parallel.For(0, threads, thread =>
+        {
+            for (var i = 0; i < linesPerThread; i++)
+            {
+                logger.Write(LogLevel.Info, $"thread {thread} line {i}");
+            }
+        });
+
+        var lines = File.ReadAllLines(_path);
+        Assert.Equal(threads * linesPerThread, lines.Length);
+        Assert.All(lines, line => Assert.Matches(@"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[INFO\] thread \d+ line \d+$", line));
+
+        // 行数だけでなく、どの行がどれかまで固定する（取り違えや重複を見逃さない）
+        var expected = from thread in Enumerable.Range(0, threads)
+                       from i in Enumerable.Range(0, linesPerThread)
+                       select $"thread {thread} line {i}";
+        var actual = lines.Select(line => line[(line.IndexOf("] ", StringComparison.Ordinal) + 2)..]);
+        Assert.Equal(expected.Order(), actual.Order());
+    }
 }

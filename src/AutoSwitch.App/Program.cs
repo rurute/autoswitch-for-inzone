@@ -1,95 +1,153 @@
-using System.Text;
-using AutoSwitch.App;
+using System.Windows.Forms;
 using AutoSwitch.Core;
 
-// 段階2のコンソール常駐。設定を読み込み、起動時同期のあと監視を続ける。Ctrl+C で終了する。
-// 起動の順序とログの文言は旧版 INZONE-AutoSwitch.ps1 に合わせる。単一起動は段階3で扱う。
-// 終了コード: 0 = Ctrl+C による正常終了、1 = 起動処理（ループ開始まで）の想定外の例外
+namespace AutoSwitch.App;
 
-IAppLogger? logger = null;
-CancellationTokenSource? cancellation = null;
-ConsoleCancelEventHandler? cancelHandler = null;
-
-try
+/// <summary>
+/// 段階3のトレイ常駐。コンソールは出さない。単一起動を先に判定してから設定とログを初期化する。
+/// 終了コード: 0 = メニューからの終了 / 二重起動による自己終了、1 = 致命的なエラー、または監視の停止を確認できなかった終了
+/// </summary>
+internal static class Program
 {
-    Console.OutputEncoding = Encoding.UTF8;
+    // 新版専用。旧版 PowerShell 版との同時起動は防げない（spec §6 のとおり手順で担保する）
+    private const string SingleInstanceMutexName = @"Local\AutoSwitchForInzone.SingleInstance";
 
-    // 1. 設定とログのパスを表示する
-    Console.WriteLine($"設定ファイル: {AppPaths.ConfigPath}");
-    Console.WriteLine($"ログファイル: {AppPaths.LogPath}");
-    Console.WriteLine("Ctrl+C で終了します。");
+    // 致命的エラーのハンドラから使う。ロガーができる前は null
+    private static IAppLogger? _logger;
+    private static int _exitCode;
 
-    // 2. 既定値の設定ファイルを作る。失敗はログを初期化してから残す
-    var created = false;
-    Exception? createError = null;
-    try
+    [STAThread]
+    private static int Main()
     {
-        created = SettingsLoader.CreateDefaultFileIfMissing(AppPaths.ConfigPath);
+        Mutex? singleInstance = null;
+        try
+        {
+            // ロガーより前に判定する。2つ目のプロセスが同じログファイルへ追記しないようにするため
+            singleInstance = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
+            if (!createdNew)
+            {
+                return 0;
+            }
+
+            ApplicationConfiguration.Initialize();
+
+            // UI スレッドの例外を既定の未処理例外ダイアログへ流さず、自分の経路で扱う。
+            // ウィンドウを作る前に呼ぶ必要がある
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += OnThreadException;
+            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+
+            var created = false;
+            Exception? createError = null;
+            try
+            {
+                created = SettingsLoader.CreateDefaultFileIfMissing(AppPaths.ConfigPath);
+            }
+            catch (Exception ex)
+            {
+                createError = ex;
+            }
+
+            var loadResult = SettingsLoader.Load(AppPaths.ConfigPath);
+            var settings = loadResult.Settings;
+            var logger = new FileLogger(AppPaths.LogPath, settings.LogLevel, settings.MaxLogSizeKB);
+            _logger = logger;
+
+            if (createError is not null)
+            {
+                logger.Write(LogLevel.Warn, $"既定値の設定ファイルを作成できません: {AppPaths.ConfigPath}: {createError.Message}");
+            }
+            if (created)
+            {
+                logger.Write(LogLevel.Info, $"既定値の設定ファイルを作成しました: {AppPaths.ConfigPath}");
+            }
+            foreach (var warning in loadResult.Warnings)
+            {
+                logger.Write(LogLevel.Warn, warning);
+            }
+
+            logger.Write(LogLevel.Info, $"INZONE Auto Switch を開始します。appRoot={AppPaths.AppRoot}");
+            logger.Write(LogLevel.Info, $"監視対象: {settings.ActionLogPath}");
+
+            var engine = new AutoSwitchEngine(
+                settings,
+                logger,
+                new PlaybackSwitcher(() => new CoreAudioPlaybackSession()),
+                new SystemClock(),
+                new SystemHubProcessProbe());
+
+            // 起動時同期は MonitorRunner のスレッドで行う（常駐の可否をログ1行の内容に委ねない）
+            // 終了の行は Dispose のあとに書く。監視スレッドの停止より先に書くと、ログの最終行が前後する
+            // アイコンの所有権が移るのは構築が成功したときだけ。失敗したらここで捨てる
+            var icons = new TrayIcons();
+            TrayApplicationContext context;
+            try
+            {
+                context = new TrayApplicationContext(engine, settings, logger, icons);
+            }
+            catch
+            {
+                icons.Dispose();
+                throw;
+            }
+
+            try
+            {
+                Application.Run(context);
+            }
+            finally
+            {
+                context.Dispose();
+            }
+
+            // 監視の停止を確認できなかった終了を、成功として報告しない
+            if (!context.MonitorStoppedCleanly)
+            {
+                BoundedLog.Write(logger, LogLevel.Error, "終了処理で監視の停止を確認できませんでした。");
+                _exitCode = 1;
+            }
+
+            BoundedLog.Write(logger, LogLevel.Info, "INZONE Auto Switch を終了します。");
+            return _exitCode;
+        }
+        catch (Exception ex)
+        {
+            Fatal("起動処理で予期しない例外が発生しました", ex);
+            return 1;
+        }
+        finally
+        {
+            Application.ThreadException -= OnThreadException;
+            AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
+            singleInstance?.Dispose();
+        }
     }
-    catch (Exception ex)
+
+    // UI スレッドで捕まえ損ねた例外。後片付けを通すため Environment.Exit は使わない
+    private static void OnThreadException(object? sender, ThreadExceptionEventArgs e)
     {
-        createError = ex;
+        Fatal("UI スレッドで予期しない例外が発生しました", e.Exception);
+        _exitCode = 1;
+        Application.Exit();
     }
 
-    // 3. 設定を読み込み、ログを初期化する
-    var loadResult = SettingsLoader.Load(AppPaths.ConfigPath);
-    var settings = loadResult.Settings;
-    logger = new FileLogger(AppPaths.LogPath, settings.LogLevel, settings.MaxLogSizeKB);
-
-    if (createError is not null)
+    // ここへ来た時点でランタイムはプロセスを終わらせる。残せる範囲で残すだけ
+    private static void OnUnhandledException(object? sender, UnhandledExceptionEventArgs e)
     {
-        logger.Write(LogLevel.Warn, $"既定値の設定ファイルを作成できません: {AppPaths.ConfigPath}: {createError.Message}");
-    }
-    if (created)
-    {
-        logger.Write(LogLevel.Info, $"既定値の設定ファイルを作成しました: {AppPaths.ConfigPath}");
-    }
-    foreach (var warning in loadResult.Warnings)
-    {
-        logger.Write(LogLevel.Warn, warning);
+        Fatal("予期しない例外が発生しました", e.ExceptionObject as Exception);
     }
 
-    // 4. 開始と監視対象を残す
-    logger.Write(LogLevel.Info, $"INZONE Auto Switch を開始します。appRoot={AppPaths.AppRoot}");
-    logger.Write(LogLevel.Info, $"監視対象: {settings.ActionLogPath}");
-
-    // 5. エンジンを組み立てて起動時同期を行う
-    var engine = new AutoSwitchEngine(
-        settings,
-        logger,
-        new PlaybackSwitcher(() => new CoreAudioPlaybackSession()),
-        new SystemClock(),
-        new SystemHubProcessProbe());
-    engine.StartupSync();
-
-    // 6. Ctrl+C では既定の強制終了を止め、監視ループを抜けさせる
-    cancellation = new CancellationTokenSource();
-    var token = cancellation.Token;
-    var source = cancellation;
-    cancelHandler = (_, e) =>
+    private static void Fatal(string headline, Exception? ex)
     {
-        e.Cancel = true;
-        source.Cancel();
-    };
-    Console.CancelKeyPress += cancelHandler;
-
-    MonitorLoop.Run(engine, settings, logger, new SystemWaiter(), token);
-
-    // 7. ループを抜けたら終了を残す
-    logger.Write(LogLevel.Info, "INZONE Auto Switch を終了します。");
-    return 0;
-}
-catch (Exception ex)
-{
-    logger?.Write(LogLevel.Error, $"起動処理で予期しない例外が発生しました: {ex.Message}");
-    Console.Error.WriteLine($"起動処理で予期しない例外が発生しました: {ex}");
-    return 1;
-}
-finally
-{
-    if (cancelHandler is not null)
-    {
-        Console.CancelKeyPress -= cancelHandler;
+        var detail = ex?.Message ?? "詳細不明";
+        if (_logger is not null)
+        {
+            BoundedLog.Write(_logger, LogLevel.Error, $"{headline}: {detail}");
+        }
+        MessageBox.Show(
+            $"{headline}。{Environment.NewLine}{Environment.NewLine}{detail}{Environment.NewLine}{Environment.NewLine}ログ: {AppPaths.LogPath}",
+            "INZONE Auto Switch",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error);
     }
-    cancellation?.Dispose();
 }

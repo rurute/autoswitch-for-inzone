@@ -667,4 +667,170 @@ public sealed class AutoSwitchEngineTests : IDisposable
         Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(_settings, _logger, _switcher, null!, _hub));
         Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(_settings, _logger, _switcher, _clock, null!));
     }
+
+    // S2: DateTimeOffset.FromUnixTimeMilliseconds の有効範囲
+    private const long MinValidUnixMs = -62135596800000L;
+    private const long MaxValidUnixMs = 253402300799999L;
+
+    [Fact]
+    public void StartupSync_TimeStampAboveRange_LogsAndDoesNotThrow()
+    {
+        File.WriteAllText(_path, Text([EventLine("L1", long.MaxValue, ConnectDevice)]));
+        var engine = CreateEngine();
+
+        engine.StartupSync();
+
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(HeadsetState.Unknown, engine.State);
+        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Warn && e.Message.Contains("範囲外"));
+    }
+
+    [Fact]
+    public void StartupSync_TimeStampBelowRange_LogsAndDoesNotThrow()
+    {
+        File.WriteAllText(_path, Text([EventLine("L1", long.MinValue, ConnectDevice)]));
+        var engine = CreateEngine();
+
+        engine.StartupSync();
+
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(HeadsetState.Unknown, engine.State);
+        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Warn && e.Message.Contains("範囲外"));
+    }
+
+    // 境界値は従来どおり受け入れる（範囲外として弾かない）
+    [Fact]
+    public void StartupSync_TimeStampAtUpperBound_IsAccepted()
+    {
+        File.WriteAllText(_path, Text([EventLine("L1", MaxValidUnixMs, ConnectDevice)]));
+        var engine = CreateEngine();
+
+        engine.StartupSync();
+
+        Assert.DoesNotContain(_logger.Entries, e => e.Message.Contains("範囲外"));
+        Assert.Equal(HeadsetState.Connected, engine.State);
+    }
+
+    [Fact]
+    public void Tick_StateChanged_RaisesEventOnce()
+    {
+        File.WriteAllText(_path, string.Empty);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        var raised = new List<HeadsetState>();
+        engine.StateChanged += (_, state) => raised.Add(state);
+
+        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
+        engine.Tick();
+
+        Assert.Equal([HeadsetState.Connected], raised);
+    }
+
+    [Fact]
+    public void Tick_SameState_DoesNotRaiseEvent()
+    {
+        File.WriteAllText(_path, string.Empty);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
+        engine.Tick();
+        var raised = new List<HeadsetState>();
+        engine.StateChanged += (_, state) => raised.Add(state);
+
+        File.WriteAllText(_path, Text([EventLine("L2", EpochMs(NowUtc), ConnectDevice)]));
+        engine.Tick();
+
+        Assert.Empty(raised);
+    }
+
+    [Fact]
+    public void Tick_StateChangedHandlerThrows_LogsErrorAndKeepsSwitching()
+    {
+        File.WriteAllText(_path, string.Empty);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        engine.StateChanged += (_, _) => throw new InvalidOperationException("boom");
+
+        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
+        engine.Tick();
+
+        Assert.Equal(HeadsetState.Connected, engine.State);
+        Assert.Equal(["BUDS"], _switcher.Calls);
+        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("boom"));
+    }
+
+    // F5: 終了が要求されたら、その読み取りの残りのイベントを処理しない
+    [Fact]
+    public void Tick_Cancelled_StopsBeforeSwitching()
+    {
+        File.WriteAllText(_path, string.Empty);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
+        engine.Tick(cancellation.Token);
+
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(HeadsetState.Unknown, engine.State);
+        Assert.Contains(_logger.Entries, e => e.Message.Contains("残りのイベントの処理を中止"));
+    }
+
+    // F9: 起動時同期も取り消されていれば切り替えない
+    [Fact]
+    public void StartupSync_Cancelled_DoesNotSwitch()
+    {
+        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
+        var engine = CreateEngine();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        engine.StartupSync(cancellation.Token);
+
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(HeadsetState.Unknown, engine.State);
+        Assert.Contains(_logger.Entries, e => e.Message.Contains("起動時同期の切り替えを行いません"));
+    }
+
+    // F9: 処理の途中で取り消されたら、その時点のイベントまでで止まる。
+    // StateChanged は SwitchFor の前に発火するので、ハンドラから取り消すと
+    // 「1件目は切り替わり、2件目は切り替わらない」という境界を固定できる
+    [Fact]
+    public void Tick_CancelledBetweenEvents_StopsAfterCurrentEvent()
+    {
+        File.WriteAllText(_path, string.Empty);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        using var cancellation = new CancellationTokenSource();
+        engine.StateChanged += (_, _) => cancellation.Cancel();
+
+        File.WriteAllText(_path, Text([
+            EventLine("L1", EpochMs(NowUtc), ConnectDevice),
+            EventLine("L2", EpochMs(NowUtc), DisconnectDevice),
+        ]));
+        engine.Tick(cancellation.Token);
+
+        Assert.Equal(["BUDS"], _switcher.Calls);
+        Assert.Equal(HeadsetState.Connected, engine.State);
+        Assert.Contains(_logger.Entries, e => e.Message.Contains("残りのイベントの処理を中止"));
+    }
+
+    // 取り消されていなければ、1回の読み取りのイベントをすべて処理する
+    [Fact]
+    public void Tick_NotCancelled_ProcessesEveryEvent()
+    {
+        File.WriteAllText(_path, string.Empty);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        using var cancellation = new CancellationTokenSource();
+
+        File.WriteAllText(_path, Text([
+            EventLine("L1", EpochMs(NowUtc), ConnectDevice),
+            EventLine("L2", EpochMs(NowUtc), DisconnectDevice),
+        ]));
+        engine.Tick(cancellation.Token);
+
+        Assert.Equal(["BUDS", "SPEAKER"], _switcher.Calls);
+    }
 }

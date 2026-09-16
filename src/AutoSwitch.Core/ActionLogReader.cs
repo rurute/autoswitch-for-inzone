@@ -9,6 +9,7 @@ public enum ReadStatus
     Truncated,
     Recreated,
     Error,
+    Skipped,
 }
 
 public sealed record ReadResult(ReadStatus Status, IReadOnlyList<string> Lines, string Message);
@@ -24,6 +25,7 @@ public sealed class ActionLogReader
     private readonly string _path;
     private long _lastLength;
     private byte[] _headFingerprint = [];
+    private bool _skippingLine;   // 上限を超えた行を読み飛ばしている途中かどうか
 
     public ActionLogReader(string path)
     {
@@ -43,6 +45,7 @@ public sealed class ActionLogReader
                 Offset = 0;
                 _lastLength = 0;
                 _headFingerprint = [];
+                _skippingLine = false;
                 return Result(ReadStatus.FileMissing);
             }
 
@@ -56,12 +59,14 @@ public sealed class ActionLogReader
             {
                 Offset = 0;
                 _headFingerprint = [];
+                _skippingLine = false;
                 status = ReadStatus.Truncated;
             }
             else if (Offset > 0 && !ReadHeadFingerprint(stream, Offset).AsSpan().SequenceEqual(_headFingerprint))
             {
                 Offset = 0;
                 _headFingerprint = [];
+                _skippingLine = false;
                 status = ReadStatus.Recreated;
             }
 
@@ -76,9 +81,42 @@ public sealed class ActionLogReader
             stream.Seek(Offset, SeekOrigin.Begin);
             var read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
 
+            // 上限を超えた行の途中にいる間は、次の改行までをまとめて捨てる。
+            // ここで行を返すと、捨てた行の末尾が独立した1行として解析されてしまう
+            if (_skippingLine)
+            {
+                var firstLf = read > 0 ? Array.IndexOf(buffer, (byte)'\n', 0, read) : -1;
+                if (firstLf < 0)
+                {
+                    Offset += read;
+                    _headFingerprint = ReadHeadFingerprint(stream, Offset);
+                    return new ReadResult(ReadStatus.Skipped, [], $"{read} バイトを読み飛ばしました。まだ行の途中です");
+                }
+
+                Offset += firstLf + 1;
+                _skippingLine = false;
+                _headFingerprint = ReadHeadFingerprint(stream, Offset);
+                return new ReadResult(ReadStatus.Skipped, [], $"{firstLf + 1} バイトを読み飛ばして行の終わりに達しました");
+            }
+
             var lastLf = read > 0 ? Array.LastIndexOf(buffer, (byte)'\n', read - 1) : -1;
             if (lastLf < 0)
             {
+                // 窓を使い切ってもなお完結しない行は、同じ位置を読み直しても永久に完結しない。
+                // 読み飛ばし中の状態へ移り、次の改行までを捨てる（S1）
+                if (read >= MaxReadBytes)
+                {
+                    Offset += read;
+                    _skippingLine = true;
+                    _headFingerprint = ReadHeadFingerprint(stream, Offset);
+
+                    // 同じ読み取りで truncate・再生成も検知していたら、そちらを優先して返す。
+                    // 読み飛ばしそのものは、次の読み取りが Skipped として報告する
+                    return status == ReadStatus.Ok
+                        ? new ReadResult(ReadStatus.Skipped, [], $"{read} バイトに改行がありません。次の改行まで読み飛ばします")
+                        : Result(status);
+                }
+
                 // 完結した行がまだ無い。オフセットは進めない
                 _headFingerprint = ReadHeadFingerprint(stream, Offset);
                 return Result(status);

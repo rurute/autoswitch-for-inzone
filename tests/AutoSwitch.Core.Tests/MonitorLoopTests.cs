@@ -129,7 +129,8 @@ public sealed class MonitorLoopTests : IDisposable
         Run(engine, waiter);
 
         Assert.Equal(Seconds(PollSeconds), waiter.Durations);
-        Assert.Equal(HeadsetState.Connected, engine.State);
+        Assert.Equal(HeadsetState.Unknown, engine.State);
+        Assert.Empty(_switcher.Calls);
         Assert.Empty(Errors());
     }
 

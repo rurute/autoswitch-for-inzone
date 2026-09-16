@@ -18,6 +18,10 @@ public sealed class FileLogger : IAppLogger
     private const string NewLine = "\r\n";
     private static readonly Encoding Utf8WithoutBom = new UTF8Encoding(false);
 
+    // ローテーションと書き込みを保持したまま止まったスレッドがあっても、
+    // 他のスレッドを無制限に待たせない。段階3では監視スレッドと UI スレッドが共有する
+    private static readonly TimeSpan GateTimeout = TimeSpan.FromSeconds(2);
+
     private readonly string _path;
     private readonly LogLevel _minimumLevel;
     private readonly long _maxSizeBytes;
@@ -63,7 +67,13 @@ public sealed class FileLogger : IAppLogger
             return;
         }
 
-        lock (_gate)
+        if (!Monitor.TryEnter(_gate, GateTimeout))
+        {
+            // 先客が止まっている。この行は捨てる。捨てたことを同じロガーへ書くことはできない
+            return;
+        }
+
+        try
         {
             // 旧版は -eq で比べるため、大文字小文字を区別しない
             if (_lastMessage is not null && string.Equals(message, _lastMessage, StringComparison.OrdinalIgnoreCase))
@@ -84,6 +94,10 @@ public sealed class FileLogger : IAppLogger
 
             RotateIfNeeded();
             Append(Utf8WithoutBom.GetBytes(text.ToString()));
+        }
+        finally
+        {
+            Monitor.Exit(_gate);
         }
     }
 

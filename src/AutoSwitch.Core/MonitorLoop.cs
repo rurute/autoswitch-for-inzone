@@ -59,7 +59,13 @@ public static class MonitorLoop
                     return;
                 }
 
-                engine.Tick();
+                // 待機中に取り消されていたら、この tick は行わない
+                if (token.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                engine.Tick(token);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {

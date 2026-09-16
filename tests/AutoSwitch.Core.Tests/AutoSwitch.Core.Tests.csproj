@@ -4,6 +4,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <RootNamespace>AutoSwitch.Core.Tests</RootNamespace>
+    <!-- xUnit1051: Tick / StartupSync が CancellationToken を受けるようになると、
+         トークンを渡さない既存の呼び出しがすべて指摘される。これらは同期・短時間の
+         呼び出しで、取り消しを検証するテストは自分の CancellationTokenSource を渡す。
+         TreatWarningsAsErrors のためビルドが止まるので、この規則だけ無効にする -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3" Version="4.0.1" />

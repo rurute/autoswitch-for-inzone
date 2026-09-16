@@ -10,5 +10,7 @@ internal static class AppPaths
 
     public static string ConfigPath { get; } = Path.Combine(AppRoot, "config.json");
 
-    public static string LogPath { get; } = Path.Combine(AppRoot, "logs", "AutoSwitchForInzone.log");
+    public static string LogFolder { get; } = Path.Combine(AppRoot, "logs");
+
+    public static string LogPath { get; } = Path.Combine(LogFolder, "AutoSwitchForInzone.log");
 }

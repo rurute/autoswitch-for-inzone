@@ -343,4 +343,95 @@ public sealed class ActionLogReaderTests : IDisposable
         Assert.Equal(lineCount - 4190, second.Lines.Count);
         Assert.Equal((long)lineCount * lineBytes, reader.Offset);
     }
+
+    // S1: 4 MiB の窓を使い切っても改行が無ければ、その分を読み飛ばして先へ進む
+    [Fact]
+    public void Read_NoLineFeedWithinFullWindow_SkipsAndAdvances()
+    {
+        SetContent(new string('a', (4 * 1024 * 1024) + 16));
+        var reader = new ActionLogReader(_path);
+
+        var result = reader.Read();
+
+        Assert.Equal(ReadStatus.Skipped, result.Status);
+        Assert.Empty(result.Lines);
+        Assert.Equal(4L * 1024 * 1024, reader.Offset);
+        Assert.Contains("改行がありません", result.Message);
+    }
+
+    // 読み飛ばしは次の改行で終わり、そのあとの完結した行から再開する
+    [Fact]
+    public void Read_AfterSkip_ResumesAtNextLine()
+    {
+        SetContent(new string('a', (4 * 1024 * 1024) + 16) + "\nsecond\n");
+        var reader = new ActionLogReader(_path);
+
+        var first = reader.Read();
+        var second = reader.Read();
+        var third = reader.Read();
+
+        Assert.Equal(ReadStatus.Skipped, first.Status);
+        Assert.Equal(ReadStatus.Skipped, second.Status);
+        Assert.Empty(second.Lines);
+        Assert.Equal(ReadStatus.Ok, third.Status);
+        Assert.Equal(["second"], third.Lines);
+    }
+
+    // 捨てた行の末尾が正当な JSON でも、行の一部としてまとめて捨てる（段階3の独立レビュー F3）
+    [Fact]
+    public void Read_AfterSkip_DoesNotReturnSuffixOfDiscardedLine()
+    {
+        const string suffix = "{\"logVersion\":\"1.5\",\"logId\":\"X1\",\"timeStamp\":1,\"actionTypeId\":23011,\"actionTypeName\":\"ConnectDevice\"}";
+        const string real = "{\"logVersion\":\"1.5\",\"logId\":\"X2\",\"timeStamp\":2,\"actionTypeId\":23012,\"actionTypeName\":\"DisconnectDevice\"}";
+        SetContent(new string('a', 4 * 1024 * 1024) + suffix + "\n" + real + "\n");
+        var reader = new ActionLogReader(_path);
+
+        var first = reader.Read();
+        var second = reader.Read();
+        var third = reader.Read();
+
+        Assert.Equal(ReadStatus.Skipped, first.Status);
+        Assert.Equal(ReadStatus.Skipped, second.Status);
+        Assert.Empty(second.Lines);
+        Assert.Equal(ReadStatus.Ok, third.Status);
+        Assert.Equal([real], third.Lines);
+    }
+
+    // 同じ読み取りで truncate も検知していたら、そちらを優先して返す。
+    // 読み飛ばしそのものは、次の読み取りが Skipped として報告する
+    [Fact]
+    public void Read_TruncatedAndNoLineFeedWithinFullWindow_ReportsTruncatedFirst()
+    {
+        SetContent(new string('a', (4 * 1024 * 1024) + 16) + "\n");
+        var reader = new ActionLogReader(_path);
+        reader.Read();
+        reader.Read();
+
+        SetContent(new string('b', 4 * 1024 * 1024) + "tail\nsecond\n");
+        var truncated = reader.Read();
+        var offsetAfterTruncate = reader.Offset;
+        var skipped = reader.Read();
+        var resumed = reader.Read();
+
+        Assert.Equal(ReadStatus.Truncated, truncated.Status);
+        Assert.Empty(truncated.Lines);
+        Assert.Equal(4L * 1024 * 1024, offsetAfterTruncate);
+        Assert.Equal(ReadStatus.Skipped, skipped.Status);
+        Assert.Equal(ReadStatus.Ok, resumed.Status);
+        Assert.Equal(["second"], resumed.Lines);
+    }
+
+    // 窓が埋まっていない未完の行では、従来どおりオフセットを進めない
+    [Fact]
+    public void Read_IncompleteLineShorterThanWindow_DoesNotAdvance()
+    {
+        SetContent("partial line without newline");
+        var reader = new ActionLogReader(_path);
+
+        var result = reader.Read();
+
+        Assert.Equal(ReadStatus.Ok, result.Status);
+        Assert.Empty(result.Lines);
+        Assert.Equal(0, reader.Offset);
+    }
 }
