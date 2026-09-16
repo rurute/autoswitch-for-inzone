@@ -833,4 +833,241 @@ public sealed class AutoSwitchEngineTests : IDisposable
 
         Assert.Equal(["BUDS", "SPEAKER"], _switcher.Calls);
     }
+
+    // ---- 録音の切り替え（Issue rurute/inzone-auto-switch#8） ----
+
+    private void UseCaptureTargets() =>
+        _settings = _settings with { BudsInputDevice = "BUDS_MIC", SpeakerInputDevice = "SPEAKER_MIC" };
+
+    // 空のログで監視を始め、1件ずつイベントを追記して tick する
+    private AutoSwitchEngine StartedEngine()
+    {
+        WriteLines();
+        var engine = CreateEngine();
+        engine.Tick();
+        return engine;
+    }
+
+    [Fact]
+    public void Tick_ConnectThenDisconnect_SwitchesPlaybackThenCaptureInEachDirection()
+    {
+        UseCaptureTargets();
+        var engine = StartedEngine();
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        engine.Tick();
+
+        Assert.Equal(
+            [
+                (DeviceFlow.Playback, "BUDS"),
+                (DeviceFlow.Capture, "BUDS_MIC"),
+                (DeviceFlow.Playback, "SPEAKER"),
+                (DeviceFlow.Capture, "SPEAKER_MIC"),
+            ],
+            _switcher.FlowCalls);
+        Assert.Contains((LogLevel.Info, "Switched: BUDS"), _logger.Entries);
+        Assert.Contains((LogLevel.Info, "Capture Switched: BUDS_MIC"), _logger.Entries);
+    }
+
+    // 既定の設定（録音は未設定）では、これまでどおり再生だけを切り替える
+    [Fact]
+    public void Tick_CaptureTargetsUnset_SwitchesPlaybackOnly()
+    {
+        var engine = StartedEngine();
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        engine.Tick();
+
+        Assert.Equal([(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Playback, "SPEAKER")], _switcher.FlowCalls);
+    }
+
+    // 未設定かどうかは向きごとに独立して判定する
+    [Theory]
+    [InlineData("", "SPEAKER_MIC")]
+    [InlineData("   ", "SPEAKER_MIC")]
+    public void Tick_CaptureTargetUnsetForConnectOnly_SwitchesCaptureOnDisconnectOnly(string budsInput, string speakerInput)
+    {
+        _settings = _settings with { BudsInputDevice = budsInput, SpeakerInputDevice = speakerInput };
+        var engine = StartedEngine();
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        engine.Tick();
+
+        Assert.Equal(
+            [(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Playback, "SPEAKER"), (DeviceFlow.Capture, "SPEAKER_MIC")],
+            _switcher.FlowCalls);
+    }
+
+    [Fact]
+    public void Tick_SwitchOnConnectFalse_SkipsPlaybackAndCapture()
+    {
+        UseCaptureTargets();
+        _settings = _settings with { SwitchOnConnect = false };
+        var engine = StartedEngine();
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+
+        Assert.Empty(_switcher.FlowCalls);
+        Assert.Contains((LogLevel.Info, "switchOnConnect が false のため切り替えません。"), _logger.Entries);
+    }
+
+    [Fact]
+    public void Tick_SwitchOnDisconnectFalse_SkipsPlaybackAndCapture()
+    {
+        UseCaptureTargets();
+        _settings = _settings with { SwitchOnDisconnect = false };
+        var engine = StartedEngine();
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        engine.Tick();
+
+        Assert.Equal([(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Capture, "BUDS_MIC")], _switcher.FlowCalls);
+        Assert.Contains((LogLevel.Info, "switchOnDisconnect が false のため切り替えません。"), _logger.Entries);
+    }
+
+    // 再生の結果が失敗でも録音は試みる。録音の結果は結果ごとのレベルでログに残る
+    [Theory]
+    [InlineData(SwitchResult.DeviceNotFound, LogLevel.Warn)]
+    [InlineData(SwitchResult.Unavailable, LogLevel.Warn)]
+    [InlineData(SwitchResult.Failed, LogLevel.Error)]
+    public void Tick_PlaybackNotSwitched_StillSwitchesCapture(SwitchResult playbackResult, LogLevel playbackLevel)
+    {
+        UseCaptureTargets();
+        _switcher.Result = playbackResult;
+        _switcher.CaptureResult = SwitchResult.Switched;
+        var engine = StartedEngine();
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+
+        Assert.Equal([(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Capture, "BUDS_MIC")], _switcher.FlowCalls);
+        Assert.Contains((playbackLevel, $"{playbackResult}: BUDS"), _logger.Entries);
+        Assert.Contains((LogLevel.Info, "Capture Switched: BUDS_MIC"), _logger.Entries);
+    }
+
+    [Theory]
+    [InlineData(SwitchResult.Switched, LogLevel.Info)]
+    [InlineData(SwitchResult.AlreadyDefault, LogLevel.Debug)]
+    [InlineData(SwitchResult.DeviceNotFound, LogLevel.Warn)]
+    [InlineData(SwitchResult.Unavailable, LogLevel.Warn)]
+    [InlineData(SwitchResult.Failed, LogLevel.Error)]
+    public void Tick_CaptureOutcome_IsLoggedAtLevelForResult(SwitchResult captureResult, LogLevel expectedLevel)
+    {
+        UseCaptureTargets();
+        _switcher.CaptureResult = captureResult;
+        var engine = StartedEngine();
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+
+        Assert.Contains((expectedLevel, $"Capture {captureResult}: BUDS_MIC"), _logger.Entries);
+    }
+
+    // Switcher 自身の想定外の例外は従来どおり外へ出す。再生で出たら録音は試みない
+    [Fact]
+    public void Tick_SwitcherThrowsOnPlayback_PropagatesWithoutCapture()
+    {
+        UseCaptureTargets();
+        _switcher.Exception = new InvalidOperationException("simulated switcher failure");
+        var engine = StartedEngine();
+
+        AppendLines(EventLine("x1", 1000, ConnectDevice));
+        var ex = Assert.Throws<InvalidOperationException>(engine.Tick);
+
+        Assert.Equal("simulated switcher failure", ex.Message);
+        Assert.Equal([(DeviceFlow.Playback, "BUDS")], _switcher.FlowCalls);
+    }
+
+    [Fact]
+    public void StartupSync_RecentConnectEvent_SwitchesPlaybackThenCapture()
+    {
+        UseCaptureTargets();
+        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
+        var engine = CreateEngine();
+
+        engine.StartupSync();
+
+        Assert.Equal([(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Capture, "BUDS_MIC")], _switcher.FlowCalls);
+    }
+
+    [Fact]
+    public void Tick_SameStateRepeated_DoesNotSwitchCaptureAgain()
+    {
+        UseCaptureTargets();
+        var engine = StartedEngine();
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+        AppendLines(EventLine("c2", 2000, ConnectDevice));
+        engine.Tick();
+
+        Assert.Equal([(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Capture, "BUDS_MIC")], _switcher.FlowCalls);
+    }
+
+    // 段階3の終了の契約: 取り消しのあとの音声操作は多くとも1回。再生の切り替え中に取り消されたら録音はしない
+    [Fact]
+    public void Tick_CancelledDuringPlaybackSwitch_SkipsCapture()
+    {
+        UseCaptureTargets();
+        var engine = StartedEngine();
+        using var cancellation = new CancellationTokenSource();
+        _switcher.OnSwitch = (flow, _) =>
+        {
+            if (flow == DeviceFlow.Playback)
+            {
+                cancellation.Cancel();
+            }
+        };
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick(cancellation.Token);
+
+        Assert.Equal([(DeviceFlow.Playback, "BUDS")], _switcher.FlowCalls);
+        Assert.Contains((LogLevel.Info, "終了が要求されたため、録音の切り替えを行いません。"), _logger.Entries);
+    }
+
+    [Fact]
+    public void StartupSync_CancelledDuringPlaybackSwitch_SkipsCapture()
+    {
+        UseCaptureTargets();
+        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
+        var engine = CreateEngine();
+        using var cancellation = new CancellationTokenSource();
+        _switcher.OnSwitch = (flow, _) =>
+        {
+            if (flow == DeviceFlow.Playback)
+            {
+                cancellation.Cancel();
+            }
+        };
+
+        engine.StartupSync(cancellation.Token);
+
+        Assert.Equal([(DeviceFlow.Playback, "BUDS")], _switcher.FlowCalls);
+        Assert.Contains((LogLevel.Info, "終了が要求されたため、録音の切り替えを行いません。"), _logger.Entries);
+    }
+
+    // 録音が未設定なら、取り消されていても取り消しのログは出さない（録音をもともと試みないため）
+    [Fact]
+    public void Tick_CancelledDuringPlaybackSwitch_CaptureUnset_LogsNothingAboutCapture()
+    {
+        var engine = StartedEngine();
+        using var cancellation = new CancellationTokenSource();
+        _switcher.OnSwitch = (_, _) => cancellation.Cancel();
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick(cancellation.Token);
+
+        Assert.Equal([(DeviceFlow.Playback, "BUDS")], _switcher.FlowCalls);
+        Assert.DoesNotContain(_logger.Entries, e => e.Message.Contains("録音の切り替えを行いません"));
+    }
 }

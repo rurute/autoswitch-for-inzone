@@ -71,7 +71,9 @@ public static class SettingsLoader
             values.IdlePollIntervalSeconds,
             values.StartupSyncMaxAgeMinutes,
             logLevel ?? AppSettings.Default.LogLevel,
-            values.MaxLogSizeKB);
+            values.MaxLogSizeKB,
+            values.BudsInputDevice,
+            values.SpeakerInputDevice);
         return new SettingsLoadResult(settings, warnings);
     }
 
@@ -186,6 +188,14 @@ public static class SettingsLoader
             {
                 values.MaxLogSizeKB = ReadInt(key, value, values.MaxLogSizeKB, d.MaxLogSizeKB, AppSettings.MaxLogSizeKBRange, warnings);
             }
+            else if (Is(key, "budsInputDevice"))
+            {
+                values.BudsInputDevice = ReadOptionalString(key, value, warnings);
+            }
+            else if (Is(key, "speakerInputDevice"))
+            {
+                values.SpeakerInputDevice = ReadOptionalString(key, value, warnings);
+            }
             else
             {
                 warnings.Add($"未知の設定キーを無視します: {key}");
@@ -205,6 +215,20 @@ public static class SettingsLoader
 
         warnings.Add($"{key} は空でない文字列で指定してください。既定値を使います。");
         return current;
+    }
+
+    // 録音の切り替え先（Issue rurute/inzone-auto-switch#8）。空と空白だけは未設定として警告なしで受け入れ、空文字にそろえる。
+    // 文字列以外は警告して未設定にする。旧版に無い項目なので、既存の文字列の項目とは空の扱いが違う
+    private static string ReadOptionalString(string key, JsonElement value, List<string> warnings)
+    {
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = value.GetString()!;
+            return string.IsNullOrWhiteSpace(text) ? string.Empty : text;
+        }
+
+        warnings.Add($"{key} は文字列で指定してください。未設定として扱います。");
+        return string.Empty;
     }
 
     private static bool ReadBool(string key, JsonElement value, bool current, bool defaultValue, List<string> warnings)
@@ -263,5 +287,7 @@ public static class SettingsLoader
         public int StartupSyncMaxAgeMinutes { get; set; } = AppSettings.Default.StartupSyncMaxAgeMinutes;
         public string LogLevel { get; set; } = AppSettings.Default.LogLevel.ToString();
         public int MaxLogSizeKB { get; set; } = AppSettings.Default.MaxLogSizeKB;
+        public string BudsInputDevice { get; set; } = AppSettings.Default.BudsInputDevice;
+        public string SpeakerInputDevice { get; set; } = AppSettings.Default.SpeakerInputDevice;
     }
 }

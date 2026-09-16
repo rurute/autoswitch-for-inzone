@@ -410,4 +410,114 @@ public sealed class SettingsLoaderTests : IDisposable
 
         Assert.Equal(original, File.ReadAllBytes(path));
     }
+
+    // ---- 録音の切り替え先（Issue rurute/inzone-auto-switch#8） ----
+
+    [Fact]
+    public void Default_CaptureTargetsAreUnset()
+    {
+        Assert.Equal(string.Empty, AppSettings.Default.BudsInputDevice);
+        Assert.Equal(string.Empty, AppSettings.Default.SpeakerInputDevice);
+    }
+
+    [Fact]
+    public void Load_CaptureKeys_UsesSpecifiedValuesWithoutWarnings()
+    {
+        var result = LoadContent("""
+            {
+              "budsInputDevice": "ヘッドセット マイク (INZONE Buds - Chat)",
+              "speakerInputDevice": "マイク (USB Microphone)"
+            }
+            """);
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(
+            ExpandedDefault with
+            {
+                BudsInputDevice = "ヘッドセット マイク (INZONE Buds - Chat)",
+                SpeakerInputDevice = "マイク (USB Microphone)",
+            },
+            result.Settings);
+    }
+
+    [Fact]
+    public void Load_CaptureKeysMissing_AreUnsetWithoutWarnings()
+    {
+        var result = LoadContent("""{ "budsDevice": "X" }""");
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(string.Empty, result.Settings.BudsInputDevice);
+        Assert.Equal(string.Empty, result.Settings.SpeakerInputDevice);
+    }
+
+    [Theory]
+    [InlineData("\"\"")]
+    [InlineData("\"   \"")]
+    [InlineData("\"\\t\"")]
+    public void Load_CaptureKeysEmptyOrWhitespace_AreUnsetWithoutWarnings(string json)
+    {
+        var result = LoadContent($$"""{ "budsInputDevice": {{json}}, "speakerInputDevice": {{json}} }""");
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(string.Empty, result.Settings.BudsInputDevice);
+        Assert.Equal(string.Empty, result.Settings.SpeakerInputDevice);
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("true")]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    public void Load_CaptureKeyWrongType_IsUnsetWithWarning(string json)
+    {
+        var result = LoadContent($$"""{ "budsInputDevice": {{json}} }""");
+
+        Assert.Equal(string.Empty, result.Settings.BudsInputDevice);
+        Assert.Equal(["budsInputDevice は文字列で指定してください。未設定として扱います。"], result.Warnings);
+    }
+
+    [Fact]
+    public void Load_CaptureKeyWithDifferentCase_IsAccepted()
+    {
+        var result = LoadContent("""{ "SpeakerInputDevice": "Mic" }""");
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal("Mic", result.Settings.SpeakerInputDevice);
+    }
+
+    [Fact]
+    public void Load_CaptureKeyDuplicate_UsesLastValue()
+    {
+        var result = LoadContent("""{ "budsInputDevice": "First", "BUDSINPUTDEVICE": "Last" }""");
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal("Last", result.Settings.BudsInputDevice);
+    }
+
+    [Fact]
+    public void Load_CaptureKeyDuplicate_ValidThenWrongType_IsUnsetWithOneWarning()
+    {
+        var result = LoadContent("""{ "budsInputDevice": "Mic", "budsInputDevice": 5 }""");
+
+        Assert.Equal(string.Empty, result.Settings.BudsInputDevice);
+        Assert.Equal(["budsInputDevice は文字列で指定してください。未設定として扱います。"], result.Warnings);
+    }
+
+    [Fact]
+    public void DescribeCaptureSwitching_BothSet_ListsBothNames()
+    {
+        var settings = AppSettings.Default with { BudsInputDevice = "Buds Mic", SpeakerInputDevice = "PC Mic" };
+
+        Assert.Equal("録音の切り替え: 接続時=Buds Mic / 切断時=PC Mic", settings.DescribeCaptureSwitching());
+    }
+
+    [Fact]
+    public void DescribeCaptureSwitching_Unset_ShowsUnsetForEachDirection()
+    {
+        Assert.Equal("録音の切り替え: 接続時=（未設定） / 切断時=（未設定）", AppSettings.Default.DescribeCaptureSwitching());
+        Assert.Equal(
+            "録音の切り替え: 接続時=Buds Mic / 切断時=（未設定）",
+            (AppSettings.Default with { BudsInputDevice = "Buds Mic", SpeakerInputDevice = "  " }).DescribeCaptureSwitching());
+    }
 }

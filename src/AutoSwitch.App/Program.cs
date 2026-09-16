@@ -68,11 +68,12 @@ internal static class Program
 
             logger.Write(LogLevel.Info, $"INZONE Auto Switch を開始します。appRoot={AppPaths.AppRoot}");
             logger.Write(LogLevel.Info, $"監視対象: {settings.ActionLogPath}");
+            logger.Write(LogLevel.Info, settings.DescribeCaptureSwitching());
 
             var engine = new AutoSwitchEngine(
                 settings,
                 logger,
-                new PlaybackSwitcher(() => new CoreAudioPlaybackSession()),
+                new AudioSwitcher(() => new CoreAudioSession()),
                 new SystemClock(),
                 new SystemHubProcessProbe());
 

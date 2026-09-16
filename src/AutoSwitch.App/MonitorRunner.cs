@@ -76,7 +76,7 @@ internal sealed class MonitorRunner : IDisposable
 
         // 取り消しが効くのは待機だけで、Tick や音声操作の実行中は止められない。
         // ここに来るのは実行中の呼び出しが返っていない場合だけなので、もう一度だけ猶予を取る。
-        // 音声操作は COM の呼び出しが返れば PlaybackSwitcher の using が働く
+        // 音声操作は COM の呼び出しが返れば AudioSwitcher の using が働く
         BoundedLog.Write(_logger, LogLevel.Warn, "監視スレッドが5秒で終了しませんでした。実行中の処理が返るのを待ちます。");
 
         if (_thread.Join(ExtendedStopTimeout))

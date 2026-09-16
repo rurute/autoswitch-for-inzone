@@ -66,14 +66,14 @@ public sealed class AutoSwitchEngine
 
     private readonly AppSettings _settings;
     private readonly IAppLogger _logger;
-    private readonly IPlaybackSwitcher _switcher;
+    private readonly IAudioSwitcher _switcher;
     private readonly IClock _clock;
     private readonly IHubProcessProbe _hub;
     private readonly ActionLogReader _reader;
     private readonly SeenLogIdSet _seenLogIds = new(SeenLogIdCapacity);
     private DateTime? _lastTickUtc;
 
-    public AutoSwitchEngine(AppSettings settings, IAppLogger logger, IPlaybackSwitcher switcher, IClock clock, IHubProcessProbe hub)
+    public AutoSwitchEngine(AppSettings settings, IAppLogger logger, IAudioSwitcher switcher, IClock clock, IHubProcessProbe hub)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(logger);
@@ -203,7 +203,7 @@ public sealed class AutoSwitchEngine
 
         SetState(lastEvent.State);
         _logger.Write(LogLevel.Info, $"起動時同期: 現在の状態を {lastEvent.State} と判定しました。");
-        SwitchFor(lastEvent.State);
+        SwitchFor(lastEvent.State, token);
     }
 
     public void Tick() => Tick(CancellationToken.None);
@@ -273,13 +273,14 @@ public sealed class AutoSwitchEngine
 
             SetState(newState);
             _logger.Write(LogLevel.Info, $"状態遷移を検知しました: {newState}");
-            SwitchFor(newState);
+            SwitchFor(newState, token);
         }
     }
 
-    private void SwitchFor(HeadsetState state)
+    private void SwitchFor(HeadsetState state, CancellationToken token)
     {
-        string targetName;
+        string playbackTarget;
+        string captureTarget;
         if (state == HeadsetState.Connected)
         {
             if (!_settings.SwitchOnConnect)
@@ -287,7 +288,8 @@ public sealed class AutoSwitchEngine
                 _logger.Write(LogLevel.Info, "switchOnConnect が false のため切り替えません。");
                 return;
             }
-            targetName = _settings.BudsDevice;
+            playbackTarget = _settings.BudsDevice;
+            captureTarget = _settings.BudsInputDevice;
         }
         else
         {
@@ -296,10 +298,32 @@ public sealed class AutoSwitchEngine
                 _logger.Write(LogLevel.Info, "switchOnDisconnect が false のため切り替えません。");
                 return;
             }
-            targetName = _settings.SpeakerDevice;
+            playbackTarget = _settings.SpeakerDevice;
+            captureTarget = _settings.SpeakerInputDevice;
         }
 
-        var outcome = _switcher.SwitchTo(targetName);
+        // 再生と録音は互いに独立する。結果として返る失敗では止めない。
+        // Switcher 自身の想定外の例外は捕まえずに外へ出す（再生で出れば録音は試みない）
+        WriteOutcome(_switcher.SwitchTo(DeviceFlow.Playback, playbackTarget));
+
+        // 録音の切り替え先が未設定なら何もしない（Issue rurute/inzone-auto-switch#8）
+        if (string.IsNullOrWhiteSpace(captureTarget))
+        {
+            return;
+        }
+
+        // 取り消しのあとの音声操作を多くとも1回に保つ（段階3の終了の契約）
+        if (token.IsCancellationRequested)
+        {
+            _logger.Write(LogLevel.Info, "終了が要求されたため、録音の切り替えを行いません。");
+            return;
+        }
+
+        WriteOutcome(_switcher.SwitchTo(DeviceFlow.Capture, captureTarget));
+    }
+
+    private void WriteOutcome(SwitchOutcome outcome)
+    {
         var level = outcome.Result switch
         {
             SwitchResult.Switched => LogLevel.Info,

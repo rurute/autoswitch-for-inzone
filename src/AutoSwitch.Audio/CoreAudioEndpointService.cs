@@ -4,14 +4,14 @@ using System.Runtime.InteropServices.Marshalling;
 namespace AutoSwitch.Audio;
 
 /// <summary>
-/// Core Audio の IMMDeviceEnumerator で再生デバイスを扱う。
+/// Core Audio の IMMDeviceEnumerator で再生デバイスと録音デバイスを扱う。
 /// 通知の購読やキャッシュは持たず、呼ばれるたびに取得する。
 /// </summary>
 public sealed class CoreAudioEndpointService : IDisposable
 {
     private const ushort VtLpwstr = 31;
     private static readonly PropertyKey FriendlyNameKey = new(new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"), 14);
-    private static readonly ERole[] PlaybackRoles = [ERole.Console, ERole.Multimedia, ERole.Communications];
+    private static readonly ERole[] DefaultRoles = [ERole.Console, ERole.Multimedia, ERole.Communications];
 
     private readonly StrategyBasedComWrappers _wrappers = new();
     private readonly IMMDeviceEnumerator _enumerator;
@@ -23,65 +23,88 @@ public sealed class CoreAudioEndpointService : IDisposable
         _enumerator = Guard("initialize Core Audio", () => CreateInstance<IMMDeviceEnumerator>(ComIds.MMDeviceEnumerator, "MMDeviceEnumerator"));
     }
 
-    /// <summary>有効（DEVICE_STATE_ACTIVE）な再生デバイスの一覧。</summary>
+    /// <summary>有効（DEVICE_STATE_ACTIVE）な再生デバイスの一覧。<see cref="GetEndpoints"/> に Render を渡す。</summary>
     /// <exception cref="AudioServiceException">取得に失敗した。</exception>
-    public IReadOnlyList<AudioEndpoint> GetPlaybackEndpoints() => Guard("enumerate playback devices", () =>
-    {
-        ThrowIfDisposed();
-        Check(_enumerator.EnumAudioEndpoints(EDataFlow.Render, NativeMethods.DeviceStateActive, out var collectionPointer), "IMMDeviceEnumerator.EnumAudioEndpoints");
-        var collection = Wrap<IMMDeviceCollection>(collectionPointer);
-        try
-        {
-            Check(collection.GetCount(out var count), "IMMDeviceCollection.GetCount");
+    public IReadOnlyList<AudioEndpoint> GetPlaybackEndpoints() => GetEndpoints(AudioFlow.Render);
 
-            var endpoints = new List<AudioEndpoint>((int)count);
-            for (uint i = 0; i < count; i++)
-            {
-                Check(collection.Item(i, out var devicePointer), "IMMDeviceCollection.Item");
-                endpoints.Add(ToEndpoint(Wrap<IMMDevice>(devicePointer)));
-            }
-
-            return (IReadOnlyList<AudioEndpoint>)endpoints;
-        }
-        finally
-        {
-            Release(collection);
-        }
-    });
-
-    /// <summary>既定の再生デバイス（Multimedia ロール）。再生デバイスが無ければ null。</summary>
+    /// <summary>既定の再生デバイス（Multimedia ロール）。<see cref="GetDefault"/> に Render を渡す。</summary>
     /// <exception cref="AudioServiceException">取得に失敗した。</exception>
-    public AudioEndpoint? GetDefaultPlayback() => Guard("get the default playback device", () =>
-    {
-        ThrowIfDisposed();
-        var hr = _enumerator.GetDefaultAudioEndpoint(EDataFlow.Render, ERole.Multimedia, out var pointer);
-        if (hr == NativeMethods.HResultElementNotFound)
-        {
-            return null;
-        }
+    public AudioEndpoint? GetDefaultPlayback() => GetDefault(AudioFlow.Render);
 
-        Check(hr, "IMMDeviceEnumerator.GetDefaultAudioEndpoint");
-        return ToEndpoint(Wrap<IMMDevice>(pointer));
-    });
+    /// <summary>再生の既定デバイスを変更する。<see cref="SetDefault"/> に Render を渡す。</summary>
+    /// <exception cref="AudioServiceException"><see cref="SetDefault"/> と同じ。</exception>
+    public void SetDefaultPlayback(string endpointId) => SetDefault(AudioFlow.Render, endpointId);
 
-    /// <summary>
-    /// 再生の既定デバイスを Console・Multimedia・Communications の順に変更する。
-    /// 変更の前に、ID が有効な再生デバイスの一覧に含まれることを確認する。含まれなければ何も変更しない（録音デバイスの ID も含まれないので変更されない）。
-    /// </summary>
-    /// <exception cref="AudioServiceException">
-    /// ID が有効な再生デバイスに無い（HRESULT は E_NOTFOUND、変更なし）、または変更に失敗した。
-    /// 2 つ目以降のロールで失敗したときは、メッセージに変更済みのロールを含める（既定が部分的に変わっている可能性がある）。
-    /// </exception>
-    public void SetDefaultPlayback(string endpointId)
+    /// <summary>指定の流れの、有効（DEVICE_STATE_ACTIVE）なデバイスの一覧。</summary>
+    /// <exception cref="AudioServiceException">取得に失敗した。</exception>
+    public IReadOnlyList<AudioEndpoint> GetEndpoints(AudioFlow flow)
     {
-        ArgumentException.ThrowIfNullOrEmpty(endpointId);
-        Guard("set the default playback device", () =>
+        var dataFlow = ToDataFlow(flow);
+        return Guard($"enumerate {Noun(flow)} devices", () =>
         {
             ThrowIfDisposed();
-            if (!GetPlaybackEndpoints().Any(endpoint => endpoint.Id == endpointId))
+            Check(_enumerator.EnumAudioEndpoints(dataFlow, NativeMethods.DeviceStateActive, out var collectionPointer), "IMMDeviceEnumerator.EnumAudioEndpoints");
+            var collection = Wrap<IMMDeviceCollection>(collectionPointer);
+            try
+            {
+                Check(collection.GetCount(out var count), "IMMDeviceCollection.GetCount");
+
+                var endpoints = new List<AudioEndpoint>((int)count);
+                for (uint i = 0; i < count; i++)
+                {
+                    Check(collection.Item(i, out var devicePointer), "IMMDeviceCollection.Item");
+                    endpoints.Add(ToEndpoint(Wrap<IMMDevice>(devicePointer)));
+                }
+
+                return (IReadOnlyList<AudioEndpoint>)endpoints;
+            }
+            finally
+            {
+                Release(collection);
+            }
+        });
+    }
+
+    /// <summary>指定の流れの既定デバイス（Multimedia ロール）。その流れのデバイスが無ければ null。</summary>
+    /// <exception cref="AudioServiceException">取得に失敗した。</exception>
+    public AudioEndpoint? GetDefault(AudioFlow flow)
+    {
+        var dataFlow = ToDataFlow(flow);
+        return Guard($"get the default {Noun(flow)} device", () =>
+        {
+            ThrowIfDisposed();
+            var hr = _enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Multimedia, out var pointer);
+            if (hr == NativeMethods.HResultElementNotFound)
+            {
+                return null;
+            }
+
+            Check(hr, "IMMDeviceEnumerator.GetDefaultAudioEndpoint");
+            return ToEndpoint(Wrap<IMMDevice>(pointer));
+        });
+    }
+
+    /// <summary>
+    /// 指定の流れの既定デバイスを Console・Multimedia・Communications の順に変更する。
+    /// 変更の前に、ID がその流れの有効なデバイスの一覧に含まれることを確認する。含まれなければ何も変更しない
+    /// （別の流れのデバイスの ID を渡しても一覧に含まれないので変更されない）。
+    /// </summary>
+    /// <exception cref="AudioServiceException">
+    /// ID がその流れの有効なデバイスに無い（HRESULT は E_NOTFOUND、変更なし）、または変更に失敗した。
+    /// 2 つ目以降のロールで失敗したときは、メッセージに変更済みのロールを含める（既定が部分的に変わっている可能性がある）。
+    /// </exception>
+    public void SetDefault(AudioFlow flow, string endpointId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(endpointId);
+        _ = ToDataFlow(flow);
+        var noun = Noun(flow);
+        Guard($"set the default {noun} device", () =>
+        {
+            ThrowIfDisposed();
+            if (!GetEndpoints(flow).Any(endpoint => endpoint.Id == endpointId))
             {
                 throw new AudioServiceException(
-                    $"No active playback device has id={endpointId}; the default playback device was not changed",
+                    $"No active {noun} device has id={endpointId}; the default {noun} device was not changed",
                     NativeMethods.HResultElementNotFound);
             }
 
@@ -89,7 +112,7 @@ public sealed class CoreAudioEndpointService : IDisposable
             try
             {
                 var changed = new List<ERole>();
-                foreach (var role in PlaybackRoles)
+                foreach (var role in DefaultRoles)
                 {
                     try
                     {
@@ -98,7 +121,7 @@ public sealed class CoreAudioEndpointService : IDisposable
                     catch (Exception ex) when (changed.Count > 0)
                     {
                         throw new AudioServiceException(
-                            $"{ex.Message}; the default playback device may be partially changed (already changed: {string.Join(", ", changed)})",
+                            $"{ex.Message}; the default {noun} device may be partially changed (already changed: {string.Join(", ", changed)})",
                             ex.HResult,
                             ex);
                     }
@@ -127,6 +150,17 @@ public sealed class CoreAudioEndpointService : IDisposable
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+
+    // 例外の文言に使う名詞。Render は段階1からの文言（playback）と同じにする
+    private static string Noun(AudioFlow flow) => flow == AudioFlow.Capture ? "recording" : "playback";
+
+    // 範囲外の値は COM を呼ぶ前に弾く（Guard に包まれないよう、呼び出し側で Guard の外から呼ぶ）
+    private static EDataFlow ToDataFlow(AudioFlow flow) => flow switch
+    {
+        AudioFlow.Render => EDataFlow.Render,
+        AudioFlow.Capture => EDataFlow.Capture,
+        _ => throw new ArgumentOutOfRangeException(nameof(flow), flow, "Unknown audio flow"),
+    };
 
     private static T Guard<T>(string operation, Func<T> action)
     {

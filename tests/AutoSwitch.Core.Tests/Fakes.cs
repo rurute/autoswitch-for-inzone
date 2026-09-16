@@ -1,49 +1,60 @@
 namespace AutoSwitch.Core.Tests;
 
-// 音声セッションの代わり。一覧・既定・各メソッドの例外を設定でき、切り替えの呼び出しと Dispose の回数を記録する
-public sealed class FakePlaybackSession : IPlaybackSession
+// 流れ（再生・録音）ひとつ分のフェイクの状態。一覧・既定・各操作の例外を設定でき、SetDefault に渡された ID を記録する
+public sealed class FakeFlowState
 {
-    public List<PlaybackDevice> Devices { get; } = new();
+    public List<AudioDevice> Devices { get; } = new();
 
-    public PlaybackDevice? Default { get; set; }
+    public AudioDevice? Default { get; set; }
 
-    public Exception? GetPlaybackDevicesException { get; set; }
+    public Exception? GetDevicesException { get; set; }
 
-    public Exception? GetDefaultPlaybackException { get; set; }
+    public Exception? GetDefaultException { get; set; }
 
-    public Exception? SetDefaultPlaybackException { get; set; }
+    public Exception? SetDefaultException { get; set; }
+
+    /// <summary>この流れの SetDefault に渡された ID。例外を投げる設定でも記録する</summary>
+    public List<string> SetDefaultCalls { get; } = new();
+}
+
+// 音声セッションの代わり。流れごとに別の状態を持ち、Dispose の回数を記録する
+public sealed class FakeAudioSession : IAudioSession
+{
+    public FakeFlowState Playback { get; } = new();
+
+    public FakeFlowState Capture { get; } = new();
 
     public Exception? DisposeException { get; set; }
 
-    /// <summary>SetDefaultPlayback に渡された ID。例外を投げる設定でも記録する</summary>
-    public List<string> SetDefaultPlaybackCalls { get; } = new();
-
     public int DisposeCount { get; private set; }
 
-    public IReadOnlyList<PlaybackDevice> GetPlaybackDevices()
+    public IReadOnlyList<AudioDevice> GetDevices(DeviceFlow flow)
     {
-        if (GetPlaybackDevicesException is not null)
+        var state = For(flow);
+        if (state.GetDevicesException is not null)
         {
-            throw GetPlaybackDevicesException;
+            throw state.GetDevicesException;
         }
-        return Devices.ToList();
+        return state.Devices.ToList();
     }
 
-    public PlaybackDevice? GetDefaultPlayback()
+    public AudioDevice? GetDefault(DeviceFlow flow)
     {
-        if (GetDefaultPlaybackException is not null)
+        var state = For(flow);
+        if (state.GetDefaultException is not null)
         {
-            throw GetDefaultPlaybackException;
+            throw state.GetDefaultException;
         }
-        return Default;
+        return state.Default;
     }
 
-    public void SetDefaultPlayback(string id)
+    public void SetDefault(DeviceFlow flow, string id)
     {
-        SetDefaultPlaybackCalls.Add(id);
-        if (SetDefaultPlaybackException is not null)
+        var state = For(flow);
+        state.SetDefaultCalls.Add(id);
+        if (state.SetDefaultException is not null)
         {
-            throw SetDefaultPlaybackException;
+            throw state.SetDefaultException;
         }
     }
 
@@ -55,6 +66,13 @@ public sealed class FakePlaybackSession : IPlaybackSession
             throw DisposeException;
         }
     }
+
+    private FakeFlowState For(DeviceFlow flow) => flow switch
+    {
+        DeviceFlow.Playback => Playback,
+        DeviceFlow.Capture => Capture,
+        _ => throw new ArgumentOutOfRangeException(nameof(flow)),
+    };
 }
 
 // 時計の代わり。テストから現在時刻を進められる
@@ -82,22 +100,39 @@ public sealed class FakeHubProcessProbe : IHubProcessProbe
     }
 }
 
-// 切り替えの代わり。呼ばれた名前を順に記録し、設定した結果を返すか例外を投げる
-public sealed class RecordingSwitcher : IPlaybackSwitcher
+// 切り替えの代わり。呼ばれた名前と流れを順に記録し、設定した結果を返すか例外を投げる
+public sealed class RecordingSwitcher : IAudioSwitcher
 {
     public SwitchResult Result { get; set; } = SwitchResult.Switched;
 
+    /// <summary>録音の結果。null なら Result を使う</summary>
+    public SwitchResult? CaptureResult { get; set; }
+
     public Exception? Exception { get; set; }
 
-    /// <summary>SwitchTo に渡された名前。例外を投げる設定でも記録する</summary>
+    /// <summary>記録の直後、結果を返す前に呼ばれる。テストが切り替えの途中で取り消しを要求するのに使う</summary>
+    public Action<DeviceFlow, string>? OnSwitch { get; set; }
+
+    /// <summary>SwitchTo に渡された名前（流れを問わず呼ばれた順）。例外を投げる設定でも記録する</summary>
     public List<string> Calls { get; } = new();
 
-    public SwitchOutcome SwitchTo(string deviceName)
+    /// <summary>SwitchTo に渡された流れと名前（呼ばれた順）。例外を投げる設定でも記録する</summary>
+    public List<(DeviceFlow Flow, string Name)> FlowCalls { get; } = new();
+
+    public SwitchOutcome SwitchTo(DeviceFlow flow, string deviceName)
     {
         Calls.Add(deviceName);
+        FlowCalls.Add((flow, deviceName));
+        OnSwitch?.Invoke(flow, deviceName);
         if (Exception is not null)
         {
             throw Exception;
+        }
+
+        if (flow == DeviceFlow.Capture)
+        {
+            var captureResult = CaptureResult ?? Result;
+            return new SwitchOutcome(captureResult, $"Capture {captureResult}: {deviceName}");
         }
         return new SwitchOutcome(Result, $"{Result}: {deviceName}");
     }
