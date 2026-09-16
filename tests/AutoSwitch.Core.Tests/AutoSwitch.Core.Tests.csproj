@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>AutoSwitch.Core.Tests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- xunit.v3 は Xunit 名前空間を自動 import しない -->
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AutoSwitch.Core\AutoSwitch.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 旧版テストと同じ fixture を移動せずに参照する -->
+    <None Include="..\fixtures\actionlog-sample.log" Link="fixtures\actionlog-sample.log" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 旧版の「リポジトリの config.json」の検査を引き継ぐため、移動せずに参照する -->
+    <None Include="..\..\config.json" Link="repo\config.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
