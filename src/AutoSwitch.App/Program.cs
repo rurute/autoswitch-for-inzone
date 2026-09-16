@@ -76,6 +76,10 @@ internal static class Program
                 new SystemClock(),
                 new SystemHubProcessProbe());
 
+            // exe のフルパス。apphost 経由の起動では ProcessPath がその exe を指す
+            var autoStart = new AutoStartRegistration(Environment.ProcessPath ?? Application.ExecutablePath);
+            LogAutoStartState(autoStart, logger);
+
             // 起動時同期は MonitorRunner のスレッドで行う（常駐の可否をログ1行の内容に委ねない）
             // 終了の行は Dispose のあとに書く。監視スレッドの停止より先に書くと、ログの最終行が前後する
             // アイコンの所有権が移るのは構築が成功したときだけ。失敗したらここで捨てる
@@ -83,7 +87,7 @@ internal static class Program
             TrayApplicationContext context;
             try
             {
-                context = new TrayApplicationContext(engine, settings, logger, icons);
+                context = new TrayApplicationContext(engine, settings, logger, icons, autoStart);
             }
             catch
             {
@@ -120,6 +124,20 @@ internal static class Program
             Application.ThreadException -= OnThreadException;
             AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
             singleInstance?.Dispose();
+        }
+    }
+
+    // ログオン起動の確認で、そのとき Run キーがどうなっていたかを後から読み取れるようにする
+    private static void LogAutoStartState(AutoStartRegistration autoStart, IAppLogger logger)
+    {
+        try
+        {
+            var state = autoStart.IsEnabled() ? "有効" : "無効";
+            logger.Write(LogLevel.Info, $@"自動起動: {state}（HKCU\{autoStart.KeyPath}）");
+        }
+        catch (Exception ex)
+        {
+            logger.Write(LogLevel.Warn, $"自動起動の登録状態を読み取れません: {ex.Message}");
         }
     }
 

@@ -38,7 +38,13 @@ $modulesDst = Join-Path $InstallRoot 'modules'
 if (Test-Path -LiteralPath $modulesDst) { Remove-Item -LiteralPath $modulesDst -Recurse -Force }
 
 # src\ の「中身」を配置する。src というディレクトリ階層は作らない
-Copy-Item -Path (Join-Path $repoRoot 'src\*') -Destination $InstallRoot -Recurse -Force
+# C# 版（新版）のプロジェクトは旧版の配置先へ入れない。旧版が使うのは modules\ と INZONE-AutoSwitch.ps1 だけ
+$csharpProjects = @('AutoSwitch.Core', 'AutoSwitch.App', 'AutoSwitch.Audio')
+# -Force は隠しファイル・隠しフォルダも列挙するため。元の src\* のワイルドカードは隠し項目も拾うので、
+# それを付けないと除外3つ以外でも取りこぼしが出る（段階4 plan レビュー F4）
+Get-ChildItem -Path (Join-Path $repoRoot 'src') -Force |
+    Where-Object { $csharpProjects -notcontains $_.Name } |
+    ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $InstallRoot -Recurse -Force }
 Copy-Item -Path (Join-Path $repoRoot 'scripts\launch-hidden.vbs') -Destination $InstallRoot -Force
 
 New-Item -ItemType Directory -Path (Join-Path $InstallRoot 'logs') -Force | Out-Null
