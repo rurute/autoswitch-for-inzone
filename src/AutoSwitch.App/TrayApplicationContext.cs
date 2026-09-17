@@ -8,7 +8,7 @@ namespace AutoSwitch.App;
 /// <summary>
 /// トレイ常駐の本体。UI スレッドで動き、監視は MonitorRunner のスレッドが回す。
 /// 状態変更は監視スレッドから届くので、ハンドルを作った隠し Control 経由で UI スレッドへ渡す。
-/// 後片付けは Dispose に集める（購読の解除 → 監視の停止 → アイコンとメニューの解放の順）。
+/// 後片付けは Dispose に集める（購読の解除 → 設定画面を閉じる → 監視の停止 → アイコンとメニューの解放の順）。
 /// </summary>
 internal sealed class TrayApplicationContext : ApplicationContext
 {
@@ -25,6 +25,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AutoStartRegistration _autoStart;
     // コンストラクタの try の中で作る。作る前に失敗した経路では null のままになる
     private ToolStripMenuItem? _autoStartItem;
+
+    // 同時に1つだけ開く設定画面（Issue rurute/inzone-auto-switch#9）。閉じたら null に戻す
+    private SettingsForm? _settingsForm;
 
     private bool _stopped;
 
@@ -47,6 +50,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // UI スレッドでウィンドウハンドルを作る。BeginInvoke の行き先になる
             _ = _marshaller.Handle;
 
+            _menu.Items.Add("設定(&S)...", null, (_, _) => OpenSettings());
             _menu.Items.Add("設定ファイルを開く(&C)", null, (_, _) => Open(AppPaths.ConfigPath));
             _menu.Items.Add("ログフォルダを開く(&L)", null, (_, _) => Open(AppPaths.LogFolder));
 
@@ -67,6 +71,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _notifyIcon.ContextMenuStrip = _menu;
             _notifyIcon.Icon = _icons.For(engine.State);
             _notifyIcon.Text = TooltipFor(engine.State);
+            _notifyIcon.DoubleClick += OnNotifyIconDoubleClick;
             _notifyIcon.Visible = true;
 
             _engine.StateChanged += OnStateChanged;
@@ -184,6 +189,88 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private void OnNotifyIconDoubleClick(object? sender, EventArgs e) => OpenSettings();
+
+    /// <summary>
+    /// 設定画面を開く。開いていれば前面に出すだけにする。開くたびに config.json とデバイスの一覧を読み直す（spec §4）
+    /// </summary>
+    private void OpenSettings()
+    {
+        if (_stopped)
+        {
+            return;
+        }
+
+        SettingsForm? form = null;
+        try
+        {
+            if (_settingsForm is { IsDisposed: false } opened)
+            {
+                if (opened.WindowState == FormWindowState.Minimized)
+                {
+                    opened.WindowState = FormWindowState.Normal;
+                }
+                opened.Activate();
+                return;
+            }
+
+            var source = SettingsFileEditor.Open(AppPaths.ConfigPath);
+            var (playback, capture) = DeviceListProvider.Load();
+            var model = SettingsFormModel.Create(source.Values, playback, capture);
+            form = new SettingsForm(model, source.Problem, SaveSettings);
+            var created = form;
+            // 表示中のフォームは閉じると破棄される。後から開いた画面の参照を消さないよう、自分のときだけ null に戻す
+            created.FormClosed += (_, _) =>
+            {
+                if (ReferenceEquals(_settingsForm, created))
+                {
+                    _settingsForm = null;
+                }
+            };
+            created.Show();
+            created.Activate();
+            _settingsForm = created;
+        }
+        catch (Exception ex)
+        {
+            // 設定画面を開けなくても常駐は続ける（UI スレッドの未処理例外にすると Program の致命的エラーの経路で終了してしまう）
+            // 作りかけの画面の破棄で失敗しても、元の失敗の記録と表示は続ける
+            try
+            {
+                form?.Dispose();
+            }
+            catch (Exception)
+            {
+            }
+            _logger.Write(LogLevel.Error, $"設定画面を開けません: {ex.Message}");
+            MessageBox.Show(
+                $"設定画面を開けません。{Environment.NewLine}{Environment.NewLine}{ex.Message}",
+                "INZONE Auto Switch",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
+    /// <summary>
+    /// 設定画面の保存。config.json の6項目を書き換え、成功したら動作中の設定へ反映する（spec §5・§6）。
+    /// その場ではデバイスを切り替えない。失敗したら理由を返し、動作中の設定は変えない
+    /// </summary>
+    private string? SaveSettings(SwitchSettings values)
+    {
+        var result = SettingsFileEditor.Save(AppPaths.ConfigPath, values);
+        if (!result.Succeeded)
+        {
+            var error = result.Error ?? "詳細不明";
+            _logger.Write(LogLevel.Warn, $"設定を保存できません: {error}");
+            return error;
+        }
+
+        // 入れ替えるのは UI スレッドだけなので、読んでから入れ替えるまでに他から変わることはない
+        _engine.Settings.Replace(values.ApplyTo(_engine.Settings.Current));
+        _logger.Write(LogLevel.Info, values.DescribeSaved());
+        return null;
+    }
+
     private void Open(string path)
     {
         try
@@ -224,6 +311,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _stopped = true;
         _engine.StateChanged -= OnStateChanged;
         _menu.Opening -= OnMenuOpening;
+        _notifyIcon.DoubleClick -= OnNotifyIconDoubleClick;
+        // 設定画面は保存せずに閉じる。監視の停止より前に行う（spec §4「終了との関係」）
+        _settingsForm?.Dispose();
+        _settingsForm = null;
         _runner?.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();

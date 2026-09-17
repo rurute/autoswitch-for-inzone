@@ -1070,4 +1070,177 @@ public sealed class AutoSwitchEngineTests : IDisposable
         Assert.Equal([(DeviceFlow.Playback, "BUDS")], _switcher.FlowCalls);
         Assert.DoesNotContain(_logger.Entries, e => e.Message.Contains("録音の切り替えを行いません"));
     }
+
+    // ---- 動作中の設定の入れ替え（Issue rurute/inzone-auto-switch#9） ----
+
+    private static AppSettings NewTargets(AppSettings current) => current with
+    {
+        BudsDevice = "NEW_BUDS",
+        SpeakerDevice = "NEW_SPEAKER",
+        BudsInputDevice = "NEW_BUDS_MIC",
+        SpeakerInputDevice = "NEW_SPEAKER_MIC",
+    };
+
+    [Fact]
+    public void Settings_StartsWithConstructorSettings()
+    {
+        var engine = CreateEngine();
+
+        Assert.Same(_settings, engine.Settings.Current);
+    }
+
+    [Fact]
+    public void Tick_AfterReplace_UsesNewTargetsFromNextTransition()
+    {
+        UseCaptureTargets();
+        var engine = StartedEngine();
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+
+        engine.Settings.Replace(NewTargets(engine.Settings.Current));
+        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        engine.Tick();
+        AppendLines(EventLine("c2", 3000, ConnectDevice));
+        engine.Tick();
+
+        Assert.Equal(
+            [
+                (DeviceFlow.Playback, "BUDS"),
+                (DeviceFlow.Capture, "BUDS_MIC"),
+                (DeviceFlow.Playback, "NEW_SPEAKER"),
+                (DeviceFlow.Capture, "NEW_SPEAKER_MIC"),
+                (DeviceFlow.Playback, "NEW_BUDS"),
+                (DeviceFlow.Capture, "NEW_BUDS_MIC"),
+            ],
+            _switcher.FlowCalls);
+    }
+
+    [Fact]
+    public void Tick_AfterReplace_UsesNewSwitchFlags()
+    {
+        UseCaptureTargets();
+        var engine = StartedEngine();
+
+        engine.Settings.Replace(engine.Settings.Current with { SwitchOnConnect = false });
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+        engine.Settings.Replace(engine.Settings.Current with { SwitchOnConnect = true, SwitchOnDisconnect = false });
+        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        engine.Tick();
+
+        Assert.Empty(_switcher.FlowCalls);
+        Assert.Contains((LogLevel.Info, "switchOnConnect が false のため切り替えません。"), _logger.Entries);
+        Assert.Contains((LogLevel.Info, "switchOnDisconnect が false のため切り替えません。"), _logger.Entries);
+    }
+
+    [Fact]
+    public void Replace_AloneDoesNotSwitchOrChangeState()
+    {
+        UseCaptureTargets();
+        var engine = StartedEngine();
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+        var callsBefore = _switcher.FlowCalls.Count;
+
+        engine.Settings.Replace(NewTargets(engine.Settings.Current));
+        engine.Tick();
+
+        Assert.Equal(callsBefore, _switcher.FlowCalls.Count);
+        Assert.Equal(HeadsetState.Connected, engine.State);
+    }
+
+    // 入れ替えても既読の logId は残る。既に処理したイベントを再び読んでも切り替えない（spec §6「守ること」）
+    [Fact]
+    public void Replace_KeepsSeenLogIds()
+    {
+        UseCaptureTargets();
+        var engine = StartedEngine();
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        engine.Tick();
+        var callsBefore = _switcher.FlowCalls.Count;
+
+        engine.Settings.Replace(NewTargets(engine.Settings.Current));
+        // 短く書き直して truncate として先頭から読み直させ、既読の接続イベントだけを再び読ませる
+        WriteLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+
+        Assert.Equal(callsBefore, _switcher.FlowCalls.Count);
+        Assert.Equal(HeadsetState.Disconnected, engine.State);
+    }
+
+    // 6項目以外は起動時の値を使い続ける（spec §6）
+    [Fact]
+    public void Tick_AfterReplace_KeepsStartupPollInterval()
+    {
+        var engine = StartedEngine();
+
+        engine.Settings.Replace(engine.Settings.Current with { PollIntervalSeconds = 30, IdlePollIntervalSeconds = 60 });
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+
+        Assert.Equal(_settings.PollIntervalSeconds, engine.NextDelaySeconds);
+    }
+
+    // 1回の切り替えは始めたときの設定で最後まで行う（spec §6）
+    [Fact]
+    public void Tick_ReplacedDuringPlaybackSwitch_FinishesWithSnapshotThenUsesNewSettings()
+    {
+        UseCaptureTargets();
+        var engine = StartedEngine();
+        var replaced = false;
+        _switcher.OnSwitch = (flow, _) =>
+        {
+            if (flow == DeviceFlow.Playback && !replaced)
+            {
+                replaced = true;
+                engine.Settings.Replace(NewTargets(engine.Settings.Current));
+            }
+        };
+
+        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        engine.Tick();
+        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        engine.Tick();
+
+        Assert.Equal(
+            [
+                (DeviceFlow.Playback, "BUDS"),
+                (DeviceFlow.Capture, "BUDS_MIC"),
+                (DeviceFlow.Playback, "NEW_SPEAKER"),
+                (DeviceFlow.Capture, "NEW_SPEAKER_MIC"),
+            ],
+            _switcher.FlowCalls);
+    }
+
+    [Fact]
+    public void StartupSync_ReplacedDuringPlaybackSwitch_FinishesWithSnapshotThenUsesNewSettings()
+    {
+        UseCaptureTargets();
+        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
+        var engine = CreateEngine();
+        var replaced = false;
+        _switcher.OnSwitch = (flow, _) =>
+        {
+            if (flow == DeviceFlow.Playback && !replaced)
+            {
+                replaced = true;
+                engine.Settings.Replace(NewTargets(engine.Settings.Current));
+            }
+        };
+
+        engine.StartupSync();
+        AppendLines(EventLine("d1", EpochMs(NowUtc), DisconnectDevice));
+        engine.Tick();
+
+        Assert.Equal(
+            [
+                (DeviceFlow.Playback, "BUDS"),
+                (DeviceFlow.Capture, "BUDS_MIC"),
+                (DeviceFlow.Playback, "NEW_SPEAKER"),
+                (DeviceFlow.Capture, "NEW_SPEAKER_MIC"),
+            ],
+            _switcher.FlowCalls);
+    }
 }

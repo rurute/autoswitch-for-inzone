@@ -53,6 +53,7 @@ public sealed class SystemHubProcessProbe : IHubProcessProbe
 /// <summary>
 /// 起動時同期と監視 tick。規則とログの文言は旧版 Orchestrator.psm1 に合わせる。
 /// 切り替えの例外は外へ出す（監視ループが記録する）。
+/// 切り替えの6項目（SwitchSettings）は Settings から切り替えのたびに読み、ほかの項目は起動時の値を使い続ける（Issue rurute/inzone-auto-switch#9）。
 /// </summary>
 public sealed class AutoSwitchEngine
 {
@@ -88,7 +89,14 @@ public sealed class AutoSwitchEngine
         _hub = hub;
         _reader = new ActionLogReader(settings.ActionLogPath);
         NextDelaySeconds = settings.PollIntervalSeconds;
+        Settings = new LiveSettings(settings);
     }
+
+    /// <summary>
+    /// 動作中の設定。入れ替えると、次に始まる切り替えから6項目の新しい値を使う。
+    /// ポーリング間隔や起動時同期の条件など、6項目以外はコンストラクタで受け取った値を使い続ける
+    /// </summary>
+    public LiveSettings Settings { get; }
 
     public HeadsetState State { get; private set; } = HeadsetState.Unknown;
 
@@ -279,27 +287,30 @@ public sealed class AutoSwitchEngine
 
     private void SwitchFor(HeadsetState state, CancellationToken token)
     {
+        // 1回の切り替え（ON/OFF の判定、再生、録音）は、ここで取り出した設定だけで行う。
+        // 途中で入れ替えられても古い設定と新しい設定が混ざらない（spec §6）
+        var settings = Settings.Current;
         string playbackTarget;
         string captureTarget;
         if (state == HeadsetState.Connected)
         {
-            if (!_settings.SwitchOnConnect)
+            if (!settings.SwitchOnConnect)
             {
                 _logger.Write(LogLevel.Info, "switchOnConnect が false のため切り替えません。");
                 return;
             }
-            playbackTarget = _settings.BudsDevice;
-            captureTarget = _settings.BudsInputDevice;
+            playbackTarget = settings.BudsDevice;
+            captureTarget = settings.BudsInputDevice;
         }
         else
         {
-            if (!_settings.SwitchOnDisconnect)
+            if (!settings.SwitchOnDisconnect)
             {
                 _logger.Write(LogLevel.Info, "switchOnDisconnect が false のため切り替えません。");
                 return;
             }
-            playbackTarget = _settings.SpeakerDevice;
-            captureTarget = _settings.SpeakerInputDevice;
+            playbackTarget = settings.SpeakerDevice;
+            captureTarget = settings.SpeakerInputDevice;
         }
 
         // 再生と録音は互いに独立する。結果として返る失敗では止めない。
