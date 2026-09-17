@@ -53,7 +53,7 @@ Buds の接続・切断に合わせて、**再生デバイスだけでなく録�
 - **再生と録音は互いに独立する。**片方の結果が「見つからない」「操作できない（セッションを開けない）」「失敗」でも、もう片方は試みる。結果はそれぞれログに残し、レベルは結果ごとに再生と同じ（切り替えた = Info、既に既定 = Debug、見つからない・操作できない = Warn、失敗 = Error）。
 - **例外の境界は現在のまま保つ。**音声操作で起きる通常の失敗（セッションを開けない、一覧・既定の取得や変更の例外）は `AudioSwitcher` が結果（`SwitchOutcome`）に変換し、外へ出さない。一方、`AudioSwitcher` 自身が想定外の例外を投げた場合は、エンジンは現在と同じくそれを捕まえずに外へ出す（監視ループが記録する。既存テスト `Tick_SwitcherThrows_PropagatesAfterUpdatingState` の契約）。このとき、再生で例外が出れば録音は試みない。独立性が及ぶのは「結果として返る失敗」までであり、エンジンに新しい catch は足さない（spec レビュー F1）。
 - 判定の順序は再生と同じで、**1か所の実装を共有する**。
-  1. 既定のデバイス（Multimedia ロール）が目的の名前なら何もしない。取得に失敗したら判定せず先へ進む
+  1. 既定のデバイスが Console・Multimedia・Communications の3ロールとも目的の名前なら何もしない。1ロールでも違う（既定が無いロールを含む）なら先へ進む。取得に失敗したら判定せず先へ進む（当初は Multimedia ロールだけで判定していた。Windows の設定で録音を選ぶと Communications だけが残るため、Issue rurute/inzone-auto-switch#14 で3ロールに改めた、2026-09-17）
   2. 有効なデバイスの一覧から、名前が一致する（大文字小文字を区別しない）最初のものを選ぶ。無ければ「見つからない」
   3. Console・Multimedia・Communications の3ロールを変更する
 - 状態遷移のときだけ切り替える、手動変更を次の遷移まで尊重する、同じ状態のイベントが続いても切り替えない、という最小版の規則は録音にもそのまま及ぶ（切り替えの引き金を再生と共有するため）。
@@ -89,6 +89,7 @@ Buds の接続・切断に合わせて、**再生デバイスだけでなく録�
 - `CoreAudioEndpointService` に流れを受け取るメソッドを足す。
   - `GetEndpoints(AudioFlow)`: 有効（DEVICE_STATE_ACTIVE）なデバイスの一覧
   - `GetDefault(AudioFlow)`: Multimedia ロールの既定。デバイスが無ければ null
+  - `GetDefaults(AudioFlow)`: Console・Multimedia・Communications の順の既定。既定が無いロールは null（Issue rurute/inzone-auto-switch#14 で追加。Core の `IAudioSession.GetDefaults` が使う）
   - `SetDefault(AudioFlow, id)`: Console・Multimedia・Communications の順に変更する。**変更の前に、同じ流れの有効なデバイスの一覧に ID があるかを確かめ、無ければ何も変更せずに例外を投げる**（再生の ID で録音を変える、またはその逆の取り違えもここで止まる）。2つ目以降のロールで失敗したときに変更済みのロールをメッセージに含める扱いも再生と同じ
 - 既存の `GetPlaybackEndpoints` / `GetDefaultPlayback` / `SetDefaultPlayback` は、`AudioFlow.Render` を渡す包みとして残す。段階1の契約と `tools/AudioSmoke` の既存コマンドを壊さない。再生の例外の文言も変えない。録音の例外の文言は、再生の文言の `playback` を `recording` に置き換えたものにする。
 
@@ -98,7 +99,7 @@ Buds の接続・切断に合わせて、**再生デバイスだけでなく録�
 - `record AudioDevice(string Id, string Name)`（現在の `PlaybackDevice` を改名）
 - `interface IAudioSession : IDisposable`（現在の `IPlaybackSession` を一般化）
   - `IReadOnlyList<AudioDevice> GetDevices(DeviceFlow flow)`
-  - `AudioDevice? GetDefault(DeviceFlow flow)`
+  - `IReadOnlyList<AudioDevice?> GetDefaults(DeviceFlow flow)`（Issue rurute/inzone-auto-switch#14 で `AudioDevice? GetDefault(DeviceFlow flow)` から変更。Console・Multimedia・Communications の順）
   - `void SetDefault(DeviceFlow flow, string id)`
 - `interface IAudioSwitcher`（現在の `IPlaybackSwitcher` を一般化）
   - `SwitchOutcome SwitchTo(DeviceFlow flow, string deviceName)`

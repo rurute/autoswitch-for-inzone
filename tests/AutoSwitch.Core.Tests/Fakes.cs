@@ -5,7 +5,15 @@ public sealed class FakeFlowState
 {
     public List<AudioDevice> Devices { get; } = new();
 
-    public AudioDevice? Default { get; set; }
+    /// <summary>Console・Multimedia・Communications の順の既定。テストから個別のロールを書き換えられる</summary>
+    public AudioDevice?[] Defaults { get; set; } = [null, null, null];
+
+    /// <summary>3ロールとも同じ既定にする。読むと Multimedia の既定を返す</summary>
+    public AudioDevice? Default
+    {
+        get => Defaults[1];
+        set => Defaults = [value, value, value];
+    }
 
     public Exception? GetDevicesException { get; set; }
 
@@ -38,14 +46,14 @@ public sealed class FakeAudioSession : IAudioSession
         return state.Devices.ToList();
     }
 
-    public AudioDevice? GetDefault(DeviceFlow flow)
+    public IReadOnlyList<AudioDevice?> GetDefaults(DeviceFlow flow)
     {
         var state = For(flow);
         if (state.GetDefaultException is not null)
         {
             throw state.GetDefaultException;
         }
-        return state.Default;
+        return state.Defaults.ToList();
     }
 
     public void SetDefault(DeviceFlow flow, string id)

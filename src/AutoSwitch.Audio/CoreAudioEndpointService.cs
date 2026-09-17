@@ -73,15 +73,35 @@ public sealed class CoreAudioEndpointService : IDisposable
         return Guard($"get the default {Noun(flow)} device", () =>
         {
             ThrowIfDisposed();
-            var hr = _enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Multimedia, out var pointer);
-            if (hr == NativeMethods.HResultElementNotFound)
-            {
-                return null;
-            }
-
-            Check(hr, "IMMDeviceEnumerator.GetDefaultAudioEndpoint");
-            return ToEndpoint(Wrap<IMMDevice>(pointer));
+            return GetDefaultCore(dataFlow, ERole.Multimedia);
         });
+    }
+
+    /// <summary>
+    /// 指定の流れの、Console・Multimedia・Communications の順の既定デバイス（<see cref="SetDefault"/> が変更するロールと同じ）。
+    /// 既定が無いロールは null。
+    /// </summary>
+    /// <exception cref="AudioServiceException">どれかのロールの取得に失敗した。</exception>
+    public IReadOnlyList<AudioEndpoint?> GetDefaults(AudioFlow flow)
+    {
+        var dataFlow = ToDataFlow(flow);
+        return Guard($"get the default {Noun(flow)} devices", () =>
+        {
+            ThrowIfDisposed();
+            return (IReadOnlyList<AudioEndpoint?>)DefaultRoles.Select(role => GetDefaultCore(dataFlow, role)).ToList();
+        });
+    }
+
+    private AudioEndpoint? GetDefaultCore(EDataFlow dataFlow, ERole role)
+    {
+        var hr = _enumerator.GetDefaultAudioEndpoint(dataFlow, role, out var pointer);
+        if (hr == NativeMethods.HResultElementNotFound)
+        {
+            return null;
+        }
+
+        Check(hr, "IMMDeviceEnumerator.GetDefaultAudioEndpoint");
+        return ToEndpoint(Wrap<IMMDevice>(pointer));
     }
 
     /// <summary>

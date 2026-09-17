@@ -14,8 +14,8 @@ internal sealed class CoreAudioSession : IAudioSession
     public IReadOnlyList<AudioDevice> GetDevices(DeviceFlow flow) =>
         _service.GetEndpoints(ToAudioFlow(flow)).Select(ToDevice).ToList();
 
-    public AudioDevice? GetDefault(DeviceFlow flow) =>
-        _service.GetDefault(ToAudioFlow(flow)) is { } endpoint ? ToDevice(endpoint) : null;
+    public IReadOnlyList<AudioDevice?> GetDefaults(DeviceFlow flow) =>
+        _service.GetDefaults(ToAudioFlow(flow)).Select(endpoint => endpoint is null ? null : ToDevice(endpoint)).ToList();
 
     public void SetDefault(DeviceFlow flow, string id) => _service.SetDefault(ToAudioFlow(flow), id);
 

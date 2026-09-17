@@ -60,6 +60,50 @@ public class AudioSwitcherTests
         Assert.Empty(session.Playback.SetDefaultCalls);
     }
 
+    // 3ロールのどれかが目的のデバイスでなければ、3ロールとも変更し直す（Issue rurute/inzone-auto-switch#14）
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void SwitchTo_OneRoleIsNotTarget_Switches(int roleIndex)
+    {
+        var session = RealtekDefaultWithBuds();
+        session.Playback.Default = Buds;
+        session.Playback.Defaults[roleIndex] = Realtek;
+
+        var outcome = SwitcherFor(session).SwitchTo(DeviceFlow.Playback, BudsName);
+
+        Assert.Equal(SwitchResult.Switched, outcome.Result);
+        Assert.Equal(["id-buds"], session.Playback.SetDefaultCalls);
+    }
+
+    [Fact]
+    public void SwitchTo_OneRoleHasNoDefault_Switches()
+    {
+        var session = RealtekDefaultWithBuds();
+        session.Playback.Default = Buds;
+        session.Playback.Defaults[2] = null;
+
+        var outcome = SwitcherFor(session).SwitchTo(DeviceFlow.Playback, BudsName);
+
+        Assert.Equal(SwitchResult.Switched, outcome.Result);
+        Assert.Equal(["id-buds"], session.Playback.SetDefaultCalls);
+    }
+
+    // Windows の設定でマイクを選ぶと Communications だけが元のデバイスに残る場面
+    [Fact]
+    public void SwitchTo_Capture_CommunicationsIsNotTarget_Switches()
+    {
+        var session = UsbMicDefaultWithBudsMic();
+        session.Capture.Default = BudsMic;
+        session.Capture.Defaults[2] = UsbMic;
+
+        var outcome = SwitcherFor(session).SwitchTo(DeviceFlow.Capture, BudsMicName);
+
+        Assert.Equal(SwitchResult.Switched, outcome.Result);
+        Assert.Equal(["id-buds-mic"], session.Capture.SetDefaultCalls);
+    }
+
     [Fact]
     public void SwitchTo_NameNotListed_ReturnsDeviceNotFound()
     {

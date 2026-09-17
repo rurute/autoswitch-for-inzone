@@ -12,7 +12,8 @@ public interface IAudioSession : IDisposable
 {
     IReadOnlyList<AudioDevice> GetDevices(DeviceFlow flow);
 
-    AudioDevice? GetDefault(DeviceFlow flow);
+    /// <summary>Console・Multimedia・Communications の各ロールの既定デバイス。既定が無いロールは null。</summary>
+    IReadOnlyList<AudioDevice?> GetDefaults(DeviceFlow flow);
 
     void SetDefault(DeviceFlow flow, string id);
 }
@@ -83,11 +84,12 @@ public sealed class AudioSwitcher : IAudioSwitcher
     {
         var kind = flow == DeviceFlow.Playback ? "再生" : "録音";
 
-        // 既に目的のデバイスなら何もしない。取得に失敗した場合は判定せずに先へ進む
+        // 3ロールとも既に目的のデバイスなら何もしない。1ロールでも違えば3ロールとも変更し直す（Issue rurute/inzone-auto-switch#14）。
+        // 取得に失敗した場合は判定せずに先へ進む
         try
         {
-            var current = session.GetDefault(flow);
-            if (current is not null && NameEquals(current.Name, deviceName))
+            var defaults = session.GetDefaults(flow);
+            if (defaults.Count > 0 && defaults.All(d => d is not null && NameEquals(d.Name, deviceName)))
             {
                 return new SwitchOutcome(SwitchResult.AlreadyDefault, $"既に既定の{kind}デバイスです: {deviceName}");
             }
