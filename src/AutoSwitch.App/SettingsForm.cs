@@ -9,7 +9,7 @@ namespace AutoSwitch.App;
 /// </summary>
 internal sealed class SettingsForm : Form
 {
-    private const string Caption = "INZONE Auto Switch";
+    private const string Caption = "AutoSwitch for INZONE";
     private const int ComboWidth = 360;
 
     private readonly ComboBox _budsPlayback = NewCombo();
@@ -28,7 +28,7 @@ internal sealed class SettingsForm : Form
         ArgumentNullException.ThrowIfNull(save);
         _save = save;
 
-        Text = "INZONE Auto Switch の設定";
+        Text = "AutoSwitch for INZONE の設定";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;

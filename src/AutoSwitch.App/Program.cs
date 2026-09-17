@@ -66,7 +66,7 @@ internal static class Program
                 logger.Write(LogLevel.Warn, warning);
             }
 
-            logger.Write(LogLevel.Info, $"INZONE Auto Switch を開始します。appRoot={AppPaths.AppRoot}");
+            logger.Write(LogLevel.Info, $"AutoSwitch for INZONE を開始します。appRoot={AppPaths.AppRoot}");
             logger.Write(LogLevel.Info, $"監視対象: {settings.ActionLogPath}");
             logger.Write(LogLevel.Info, settings.DescribeCaptureSwitching());
 
@@ -112,7 +112,7 @@ internal static class Program
                 _exitCode = 1;
             }
 
-            BoundedLog.Write(logger, LogLevel.Info, "INZONE Auto Switch を終了します。");
+            BoundedLog.Write(logger, LogLevel.Info, "AutoSwitch for INZONE を終了します。");
             return _exitCode;
         }
         catch (Exception ex)
@@ -165,7 +165,7 @@ internal static class Program
         }
         MessageBox.Show(
             $"{headline}。{Environment.NewLine}{Environment.NewLine}{detail}{Environment.NewLine}{Environment.NewLine}ログ: {AppPaths.LogPath}",
-            "INZONE Auto Switch",
+            "AutoSwitch for INZONE",
             MessageBoxButtons.OK,
             MessageBoxIcon.Error);
     }

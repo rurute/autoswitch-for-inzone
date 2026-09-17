@@ -91,9 +91,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     internal static string TooltipFor(HeadsetState state) => state switch
     {
-        HeadsetState.Connected => "INZONE Auto Switch: 接続中",
-        HeadsetState.Disconnected => "INZONE Auto Switch: 未接続",
-        _ => "INZONE Auto Switch: 不明",
+        HeadsetState.Connected => "AutoSwitch for INZONE: 接続中",
+        HeadsetState.Disconnected => "AutoSwitch for INZONE: 未接続",
+        _ => "AutoSwitch for INZONE: 不明",
     };
 
     private void OnStateChanged(object? sender, HeadsetState state)
@@ -245,7 +245,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _logger.Write(LogLevel.Error, $"設定画面を開けません: {ex.Message}");
             MessageBox.Show(
                 $"設定画面を開けません。{Environment.NewLine}{Environment.NewLine}{ex.Message}",
-                "INZONE Auto Switch",
+                "AutoSwitch for INZONE",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
@@ -282,7 +282,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _logger.Write(LogLevel.Warn, $"開けません: {path}: {ex.Message}");
             MessageBox.Show(
                 $"開けません。{Environment.NewLine}{Environment.NewLine}{path}{Environment.NewLine}{Environment.NewLine}{ex.Message}",
-                "INZONE Auto Switch",
+                "AutoSwitch for INZONE",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
