@@ -1,56 +1,90 @@
-# INZONE Auto Switch
+# AutoSwitch for INZONE
 
-Sony INZONE Buds の接続／切断に追従して、Windows 11 の既定の再生デバイスを自動で切り替える常駐ツール。
+Sony INZONE Buds の接続／切断に追従して、Windows 11 の既定の再生デバイス（と、設定すれば録音デバイス）を自動で切り替えるトレイ常駐アプリ。
 
 USB トランシーバーが常時接続されていると、Buds をケースに戻してもオーディオデバイスは消えないため、
-Windows は出力先を切り替えてくれない。このツールは INZONE Hub が書き出す `ActionLog.log` を監視して、
-接続／切断の**状態が変わったときだけ**既定の再生デバイスを切り替える。
+Windows は出力先を切り替えてくれない。このアプリは INZONE Hub が書き出す `ActionLog.log` を監視して、
+接続／切断の**状態が変わったときだけ**既定のデバイスを切り替える。
 
 ```
 Buds をケースから出す → 既定の再生デバイス = スピーカー (INZONE Buds - Game)
 Buds をケースへ戻す   → 既定の再生デバイス = スピーカー (Realtek(R) Audio)
 ```
 
-UI は無い。タスクトレイアイコンも通知も出ない。ログオン後にバックグラウンドで静かに動く。
+タスクトレイにアイコンが出る。アイコンの色で、いまの状態が分かる。
+
+| アイコン | 状態 |
+|---|---|
+| 紫のタイル | 接続中 |
+| 灰色のタイル | 切断中 |
+| 枠だけ | まだ分からない（起動直後など） |
+
+通知は出さない。エラーも含めて、記録はログファイルにだけ残る。
 
 ## 必要なもの
 
-- Windows 11 / Windows PowerShell 5.1
-- [AudioDeviceCmdlets](https://github.com/frgnca/AudioDeviceCmdlets)
-  ```powershell
-  Install-Module -Name AudioDeviceCmdlets -Scope CurrentUser
-  ```
-- INZONE Hub がタスクトレイに常駐していること（このツールは Hub を起動しない）
+- Windows 11
+- .NET 10。配置スクリプトがその場でビルドするため、いまは **.NET 10 SDK** が必要
+- INZONE Hub がタスクトレイに常駐していること（このアプリは Hub を起動しない）
+
+動作を確認しているのは、作者の環境（日本語版 Windows 11、INZONE Buds WF-G700N、INZONE Hub 1.0.19.0）だけである。
 
 ## インストール
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "<リポジトリ>\scripts\Install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "<リポジトリ>\scripts\Install-TrayApp.ps1"
+Start-Process "$env:LOCALAPPDATA\AutoSwitchForInzone\bin\AutoSwitch.App.exe"
 ```
 
-`%LOCALAPPDATA%\INZONE-AutoSwitch\` へ配置し、ログオン時に自動起動するスケジュールタスク（タスク名 `INZONE Auto Switch`）を登録して、その場で起動する。
-管理者権限は不要。何度実行しても安全で、既にある `config.json` は上書きしない。
+`dotnet publish` した結果を `%LOCALAPPDATA%\AutoSwitchForInzone\bin\` へ配置する。管理者権限は不要。
+何度実行しても安全で、`config.json` とログには触らない。アプリが動いている間はエラーで止まるので、先にトレイの「終了」で終わらせる。
 
-すぐに起動せず次回ログオンから動かしたい場合は `-NoStart` を付ける。
+起動したら、トレイアイコンを右クリックして次の 2 つを行う。
+
+1. **「設定(&S)...」で切り替え先のデバイスを選んで保存する。** 初期値は作者の環境のデバイス名なので、多くの環境ではそのままだと切り替わらない
+2. **「Windows ログオン時の自動起動(&A)」を選び、チェックを付ける。** 配置や起動では自動登録されない
 
 ## アンインストール
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "<リポジトリ>\scripts\Uninstall.ps1"
-```
+1. トレイメニューで自動起動のチェックを外す
+2. トレイメニューの「終了(&X)」を選ぶ
+3. `%LOCALAPPDATA%\AutoSwitchForInzone\` を消す（設定とログも消えてよければ）
 
-自動起動の登録を解除してプロセスを止める。ファイルは残る。配置先ごと消すには `-RemoveFiles` を付ける。
+自動起動の登録先は `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` の値 `AutoSwitchForInzone` である。
+チェックを外さずにフォルダを消した場合は、この値を手で消す。
+
+## トレイメニュー
+
+| 項目 | 内容 |
+|---|---|
+| 設定(&S)... | 設定画面を開く。トレイアイコンのダブルクリックでも開く |
+| 設定ファイルを開く(&C) | `config.json` を開く |
+| ログフォルダを開く(&L) | ログのフォルダを開く |
+| Windows ログオン時の自動起動(&A) | 自動起動の ON/OFF |
+| 終了(&X) | アプリを終了する |
 
 ## 設定
 
-`%LOCALAPPDATA%\INZONE-AutoSwitch\config.json` を編集して、ツールを再起動する。
+### 設定画面
+
+接続時・切断時それぞれの再生デバイスと録音デバイス、「接続したら切り替える」「切断したら切り替える」の 6 項目を変えられる。
+選択肢は、いま Windows で有効なデバイスの一覧。**保存すると再起動せずに反映する**が、その場ではデバイスを切り替えない。次の接続・切断から新しい設定を使う。
+
+録音デバイスは初期状態では「（未設定）」で、録音は切り替えない。
+
+### config.json
+
+`%LOCALAPPDATA%\AutoSwitchForInzone\config.json`。初回起動時に既定値で作られる。
+手で編集した内容はアプリの起動時にだけ読むので、編集したら再起動する。
 
 | キー | 既定値 | 説明 |
 |---|---|---|
-| `budsDevice` | `スピーカー (INZONE Buds - Game)` | 接続時に切り替える先 |
-| `speakerDevice` | `スピーカー (Realtek(R) Audio)` | 切断時に切り替える先 |
-| `switchOnConnect` | `true` | 接続時に切り替えるか |
-| `switchOnDisconnect` | `true` | 切断時に切り替えるか |
+| `budsDevice` | `スピーカー (INZONE Buds - Game)` | 接続時に切り替える再生デバイス |
+| `speakerDevice` | `スピーカー (Realtek(R) Audio)` | 切断時に切り替える再生デバイス |
+| `budsInputDevice` | （なし） | 接続時に切り替える録音デバイス。空なら切り替えない |
+| `speakerInputDevice` | （なし） | 切断時に切り替える録音デバイス。空なら切り替えない |
+| `switchOnConnect` | `true` | 接続時に切り替えるか（再生・録音とも） |
+| `switchOnDisconnect` | `true` | 切断時に切り替えるか（再生・録音とも） |
 | `actionLogPath` | `%APPDATA%\Sony\INZONE Hub\ActionLog.log` | 監視するログ（`%ENV%` を展開する） |
 | `pollIntervalSeconds` | `1` | 通常時のポーリング間隔（1〜60） |
 | `idlePollIntervalSeconds` | `5` | Hub 未起動・ログ未存在のときの間隔（1〜300） |
@@ -58,67 +92,64 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<リポジトリ>\scripts\U
 | `logLevel` | `Info` | `Debug` / `Info` / `Warn` / `Error` |
 | `maxLogSizeKB` | `1024` | このサイズを超えたら 1 世代だけ退避（64〜102400） |
 
-デバイス名は `Get-AudioDevice -List` の `Name` と完全一致させる。未知のキーは無視され、型やレンジの不正は既定値にフォールバックする（どちらもログに警告が出る）。
+デバイス名は Windows のサウンド設定に表示される名前と一致させる（大文字小文字は区別しない）。
+未知のキーは無視され、型やレンジの不正は既定値にフォールバックする（どちらもログに警告が出る）。
 
 ## 設計上の約束
 
 - **常時強制はしない。** 切り替えるのは接続／切断の状態が変わった瞬間の 1 回だけ。
   接続後に手動で別の出力へ変えても、次の抜き差しまで干渉しない。
 - **INZONE Hub を起動しない。** Hub がいなければ静かに待機し、後から起動したら自動的に監視を始める。
-- **通知を出さない。** エラーも含めてすべて自分のログにだけ記録する。
+- **通知を出さない。** 状態はトレイアイコンで示し、エラーも含めてすべて自分のログにだけ記録する。
 
 このほか、実装上の判断で分かりにくい点が 2 つある。
 
 - **ログの再生成は「作成日時」ではなく「既読部分の指紋」で検知する。** NTFS のファイルシステムトンネリングにより、
   削除後 15 秒以内に同名ファイルを作り直すと作成日時が元の値のまま復元されてしまうため、`CreationTime` を見る素朴な実装は
-  新しいファイルを古いオフセットから読んでしまう。既読済みバイト列のハッシュ（指紋）が変わったかどうかで判定することで、
+  新しいファイルを古いオフセットから読んでしまう。既読部分の先頭のバイト列（指紋）が変わったかどうかで判定することで、
   この誤検知を避けている。
 - **イベントは `logId` で重複排除する。** これにより、Hub がログを truncate してリーダーが先頭から読み直しても、
   過去に処理済みのイベントが再発火しない。
 
 ## ログ
 
-`%LOCALAPPDATA%\INZONE-AutoSwitch\logs\INZONE-AutoSwitch.log`
+`%LOCALAPPDATA%\AutoSwitchForInzone\logs\AutoSwitchForInzone.log`
 
-`maxLogSizeKB` を超えると `.log.1` へ退避する（世代は 1 つだけ）。同じメッセージが続く場合は抑制して件数だけを記録する。
-ログはこのツールの唯一の診断手段。ウィンドウも通知も出ないので、動作確認や不具合調査は必ずこのファイルを見る。
+`maxLogSizeKB` を超えると `.log.1` へ退避する（世代は 1 つだけ）。
 
 ## うまく動かないとき
 
 | 症状 | 確認すること |
 |---|---|
-| ログが出ない | タスクが登録されているか: `Get-ScheduledTask -TaskName 'INZONE Auto Switch'` |
-| `AudioDeviceCmdlets を読み込めません` | `Get-Module -ListAvailable AudioDeviceCmdlets` で導入を確認する |
-| `再生デバイスが見つかりません` | `Get-AudioDevice -List` の `Name` と `config.json` を突き合わせる |
+| トレイアイコンが出ない | `@(Get-Process -Name 'AutoSwitch.App' -ErrorAction SilentlyContinue).Count` で動いているか見る。すでに動いているときに起動しても、何もせず終わる |
+| `再生デバイスが見つかりません` / `録音デバイスが見つかりません` | 設定画面で切り替え先を選び直す |
 | `ActionLog.log がまだありません` | INZONE Hub がタスクトレイで動いているか確認する |
-| 切り替わらない | `logLevel` を `Debug` にして再起動し、`状態遷移を検知しました` の行が出ているか見る |
+| 切り替わらない | ログに `状態遷移を検知しました` の行が出ているか見る |
+| ログオン時に起動しない | トレイメニューの自動起動にチェックが付いているか見る |
 
-手動で起動して様子を見る場合:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\INZONE-AutoSwitch\INZONE-AutoSwitch.ps1"
-```
-
-多重起動は名前付き Mutex（`Local\INZONE-AutoSwitch`）で防いでいるため、タスク経由のプロセスが動いていると即座に終了する。
+見るべきログの行や、自動起動・exe の移動の詳しい扱いは [運用手順](docs/operations-minimal-csharp.md) にまとめてある。
 
 ## 開発
 
-```bash
-# Pester 5 の導入（初回のみ）
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<リポジトリ>\scripts\Install-DevDependencies.ps1'
+Windows の `dotnet` でビルド・テストする（SDK のバージョンは `global.json` で固定）。
 
-# テスト実行
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<リポジトリ>\scripts\Invoke-Tests.ps1'
+```powershell
+dotnet build AutoSwitchForInzone.sln -c Debug
+dotnet test --project tests\AutoSwitch.Core.Tests\AutoSwitch.Core.Tests.csproj
+dotnet test --project tests\AutoSwitch.App.Tests\AutoSwitch.App.Tests.csproj
 ```
 
-現在 99 件のテストがすべて成功する状態（`Tests Passed: 99, Failed: 0`）。
+| プロジェクト | 役割 |
+|---|---|
+| `src/AutoSwitch.Core` | ログの読み取り・イベント解析・状態遷移・設定。実機なしでテストできる |
+| `src/AutoSwitch.Audio` | Core Audio API で既定デバイスを読み書きする |
+| `src/AutoSwitch.App` | トレイ常駐・設定画面・自動起動 |
+| `tools/AudioSmoke` | 実機確認用のツール（デバイス一覧の表示など） |
 
-実機に触れるのは `src/modules/AudioSwitcher.psm1` と `scripts/Install.ps1` / `scripts/Uninstall.ps1` だけ。
-それ以外は INZONE Buds も INZONE Hub も無い環境でテストできる。
+設計の詳細は `docs/superpowers/specs/` を参照。
 
-設計の詳細は `docs/superpowers/specs/2026-09-15-inzone-auto-switch-design.md` を参照。
+## 旧版（PowerShell 版）について
 
-### 将来の拡張
-
-`ActionLogReader` + `SonyEventProvider` を HID 直接監視へ差し替えれば、`DeviceState` 以降は無改修で動く。
-差し替え点の契約は「`Connected` / `Disconnected` を表すイベントの列を返すこと」だけ。
+`src/INZONE-AutoSwitch.ps1`、`src/modules/`、`scripts/Install.ps1` などは、最初に作った PowerShell 版（AudioDeviceCmdlets とスケジュールタスクで動く）である。
+現在は C# 版を使っており、旧版はいつでも戻せるように残してある。旧版からの移行と、旧版へ戻す手順は [運用手順](docs/operations-minimal-csharp.md) を参照。
+**旧版と C# 版を同時に動かさないこと**（互いに既定デバイスを奪い合う）。
