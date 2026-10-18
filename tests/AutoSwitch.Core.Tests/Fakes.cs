@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace AutoSwitch.Core.Tests;
 
 // 流れ（再生・録音）ひとつ分のフェイクの状態。一覧・既定・各操作の例外を設定でき、SetDefault に渡された ID を記録する
@@ -155,6 +157,7 @@ public sealed class ListLogger : IAppLogger
 }
 
 // 待機の代わり。要求された待機時間を順に記録し、呼び出しごとに設定した動作（true / false / 例外）を行う。
+// Wait と WaitIgnoringWake は同じ手順を順に使う。
 // 設定を使い切った後の呼び出しは false を返す（テストのループを必ず終わらせるため）
 public sealed class ScriptedWaiter : IWaiter
 {
@@ -162,6 +165,12 @@ public sealed class ScriptedWaiter : IWaiter
 
     /// <summary>Wait に渡された待機時間。例外を投げる設定でも記録する</summary>
     public List<TimeSpan> Durations { get; } = new();
+
+    /// <summary>WaitIgnoringWake に渡された待機時間。例外を投げる設定でも記録する</summary>
+    public List<TimeSpan> IgnoringWakeDurations { get; } = new();
+
+    /// <summary>Wait と WaitIgnoringWake の呼び出しを呼ばれた順に記録する。IgnoringWake は WaitIgnoringWake のとき true</summary>
+    public List<(TimeSpan Duration, bool IgnoringWake)> AllWaits { get; } = new();
 
     public ScriptedWaiter Returns(params bool[] results)
     {
@@ -187,6 +196,64 @@ public sealed class ScriptedWaiter : IWaiter
     public bool Wait(TimeSpan duration, CancellationToken token)
     {
         Durations.Add(duration);
-        return _steps.Count > 0 && _steps.Dequeue()();
+        AllWaits.Add((duration, false));
+        return NextStep();
+    }
+
+    bool IWaiter.WaitIgnoringWake(TimeSpan duration, CancellationToken token)
+    {
+        IgnoringWakeDurations.Add(duration);
+        AllWaits.Add((duration, true));
+        return NextStep();
+    }
+
+    private bool NextStep() => _steps.Count > 0 && _steps.Dequeue()();
+}
+
+// 時計の代わり。UtcNow を読むたびに回数と経過時間（Stopwatch）を記録し、OnRead に読んだ回数を渡して呼ぶ。
+// MonitorLoop.Run は StartupSync を呼ばず、Tick は UtcNow を 1 回だけ読むので、読んだ回数が Tick の回数になる。
+// 監視ループのスレッドから読まれ、テストのスレッドから数えるのでロックする
+public sealed class CountingClock : IClock
+{
+    private readonly object _lock = new();
+    private readonly List<TimeSpan> _reads = new();
+    private readonly long _start = Stopwatch.GetTimestamp();
+
+    /// <summary>UtcNow を読んだ直後に、読んだ回数（1 始まり）を渡して呼ばれる</summary>
+    public Action<int>? OnRead { get; set; }
+
+    public int Count
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _reads.Count;
+            }
+        }
+    }
+
+    /// <summary>UtcNow を読んだ時刻（作成からの経過時間）を読んだ順に返す</summary>
+    public TimeSpan[] ReadTimes()
+    {
+        lock (_lock)
+        {
+            return _reads.ToArray();
+        }
+    }
+
+    public DateTime UtcNow
+    {
+        get
+        {
+            int count;
+            lock (_lock)
+            {
+                _reads.Add(Stopwatch.GetElapsedTime(_start));
+                count = _reads.Count;
+            }
+            OnRead?.Invoke(count);
+            return DateTime.UtcNow;
+        }
     }
 }

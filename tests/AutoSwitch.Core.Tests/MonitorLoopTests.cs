@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 
 namespace AutoSwitch.Core.Tests;
@@ -38,6 +39,7 @@ public sealed class MonitorLoopTests : IDisposable
 
     public void Dispose()
     {
+        _cts.Cancel();
         _cts.Dispose();
         try
         {
@@ -64,6 +66,10 @@ public sealed class MonitorLoopTests : IDisposable
     }
 
     private static TimeSpan[] Seconds(params int[] values) => values.Select(v => TimeSpan.FromSeconds(v)).ToArray();
+
+    // 呼ばれた順の待機。負の値は WaitIgnoringWake（例外のあとの 5 秒）、正の値は Wait の秒数を表す
+    private static (TimeSpan Duration, bool IgnoringWake)[] Waits(params int[] values) =>
+        values.Select(v => (TimeSpan.FromSeconds(Math.Abs(v)), v < 0)).ToArray();
 
     private string[] Errors() => _logger.Entries.Where(e => e.Level == LogLevel.Error).Select(e => e.Message).ToArray();
 
@@ -163,7 +169,7 @@ public sealed class MonitorLoopTests : IDisposable
         Run(engine, waiter);
 
         // poll 間隔で Tick（例外）→ 5 秒 → idle 間隔で Tick（新しいイベントなし）→ poll 間隔
-        Assert.Equal(Seconds(PollSeconds, 5, IdleSeconds, PollSeconds), waiter.Durations);
+        Assert.Equal(Waits(PollSeconds, -5, IdleSeconds, PollSeconds), waiter.AllWaits);
         Assert.Equal([UnexpectedPrefix + "切り替えで例外"], Errors());
         Assert.Equal(HeadsetState.Connected, engine.State);
         Assert.Equal(["BUDS"], _switcher.Calls);
@@ -180,7 +186,7 @@ public sealed class MonitorLoopTests : IDisposable
 
         Run(engine, waiter);
 
-        Assert.Equal(Seconds(PollSeconds, 5, IdleSeconds, PollSeconds), waiter.Durations);
+        Assert.Equal(Waits(PollSeconds, -5, IdleSeconds, PollSeconds), waiter.AllWaits);
         Assert.Equal([UnexpectedPrefix + "待機で例外"], Errors());
         Assert.Equal(HeadsetState.Connected, engine.State);
         Assert.Equal(["BUDS"], _switcher.Calls);
@@ -198,7 +204,7 @@ public sealed class MonitorLoopTests : IDisposable
 
         Run(engine, waiter);
 
-        Assert.Equal(Seconds(PollSeconds, 5, IdleSeconds, PollSeconds), waiter.Durations);
+        Assert.Equal(Waits(PollSeconds, -5, IdleSeconds, PollSeconds), waiter.AllWaits);
         Assert.Equal([UnexpectedPrefix + "待機で例外"], Errors());
         Assert.Equal(HeadsetState.Connected, engine.State);
     }
@@ -214,7 +220,7 @@ public sealed class MonitorLoopTests : IDisposable
 
         Run(engine, waiter);
 
-        Assert.Equal(Seconds(PollSeconds, 5), waiter.Durations);
+        Assert.Equal(Waits(PollSeconds, -5), waiter.AllWaits);
         Assert.Equal([UnexpectedPrefix + "待機で例外"], Errors());
         Assert.Equal(HeadsetState.Unknown, engine.State);
     }
@@ -229,7 +235,21 @@ public sealed class MonitorLoopTests : IDisposable
 
         Run(CreateEngine(), waiter);
 
-        Assert.Equal(Seconds(PollSeconds, 5, 1), waiter.Durations);
+        Assert.Equal(Waits(PollSeconds, -5, 1), waiter.AllWaits);
+    }
+
+    [Fact]
+    public void Run_RecoveryDelay_UsesWaitIgnoringWake()
+    {
+        // 例外のあとの 5 秒は WaitIgnoringWake で待つ（通知で打ち切らない。spec §8）
+        var waiter = new ScriptedWaiter()
+            .Throws(new InvalidOperationException("待機で例外"))
+            .Returns(true, false);
+
+        Run(CreateEngine(), waiter);
+
+        Assert.Equal(Seconds(5), waiter.IgnoringWakeDurations);
+        Assert.Equal(Seconds(PollSeconds, IdleSeconds), waiter.Durations);
     }
 
     [Fact]
@@ -257,7 +277,7 @@ public sealed class MonitorLoopTests : IDisposable
 
         Run(CreateEngine(), waiter);
 
-        Assert.Equal(Seconds(PollSeconds, 5), waiter.Durations);
+        Assert.Equal(Waits(PollSeconds, -5), waiter.AllWaits);
         Assert.Equal([UnexpectedPrefix + "取り消し以外"], Errors());
     }
 
@@ -272,6 +292,142 @@ public sealed class MonitorLoopTests : IDisposable
         Assert.Throws<ArgumentNullException>(() => MonitorLoop.Run(engine, _settings, null!, waiter, _cts.Token));
         Assert.Throws<ArgumentNullException>(() => MonitorLoop.Run(engine, _settings, _logger, null!, _cts.Token));
         Assert.Empty(waiter.Durations);
+    }
+
+    // ---- 本物の WakeableWaiter との組み合わせ（実時間を使う） ----
+    // poll 間隔は 60 秒にして、時間切れの Tick が混ざらないようにする。Tick の回数と時刻は CountingClock で数える
+
+    private const int LongPollSeconds = 60;
+
+    private AutoSwitchEngine CreateEngine(CountingClock clock)
+    {
+        _settings = _settings with { PollIntervalSeconds = LongPollSeconds };
+        return new AutoSwitchEngine(_settings, _logger, _switcher, clock, _hub);
+    }
+
+    // 監視ループを別スレッドで動かす
+    private Thread StartRun(AutoSwitchEngine engine, IWaiter waiter)
+    {
+        var thread = new Thread(() => MonitorLoop.Run(engine, _settings, _logger, waiter, _cts.Token)) { IsBackground = true };
+        thread.Start();
+        return thread;
+    }
+
+    // 取り消して、監視ループが 5 秒以内に終わることを確かめる
+    private void StopRun(Thread thread)
+    {
+        _cts.Cancel();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "監視ループが 5 秒以内に終わりませんでした");
+    }
+
+    [Fact]
+    public void Run_WakeableWaiterWokenDuringWait_TicksBeforePollInterval()
+    {
+        var clock = new CountingClock();
+        using var waiter = new WakeableWaiter();
+        // Tick の始まり（時計を読んだとき）ではなく切り替えまで待つ。すぐ取り消すと Tick の途中で切り替えをやめるため
+        using var switched = new ManualResetEventSlim();
+        _switcher.OnSwitch = (_, _) => switched.Set();
+        var thread = StartRun(CreateEngine(clock), waiter);
+        Thread.Sleep(200);
+
+        WriteConnectEvent();
+        waiter.Wake();
+        var ticked = switched.Wait(TimeSpan.FromSeconds(2));
+        StopRun(thread);
+
+        Assert.True(ticked, "起こしてから 2 秒以内に Tick で切り替えが行われませんでした");
+        Assert.Equal(1, clock.Count);
+        Assert.Equal(["BUDS"], _switcher.Calls);
+        Assert.Empty(Errors());
+    }
+
+    [Fact]
+    public void Run_WakeableWaiterWokenManyTimesBeforeRun_TicksOnce()
+    {
+        // 起こした印を、ループを始める前に 1 つの束にしておく
+        var clock = new CountingClock();
+        using var waiter = new WakeableWaiter();
+        for (var i = 0; i < 50; i++)
+        {
+            waiter.Wake();
+        }
+
+        var thread = StartRun(CreateEngine(clock), waiter);
+        Thread.Sleep(1000);
+        var count = clock.Count;
+        StopRun(thread);
+
+        Assert.Equal(1, count);
+        Assert.Empty(Errors());
+    }
+
+    [Fact]
+    public void Run_WakeableWaiterWokenDuringTick_TicksAgainImmediately()
+    {
+        var clock = new CountingClock();
+        using var waiter = new WakeableWaiter();
+        // 1 回目の Tick の最中に起こす
+        clock.OnRead = count =>
+        {
+            if (count == 1)
+            {
+                waiter.Wake();
+            }
+        };
+        waiter.Wake();
+
+        var thread = StartRun(CreateEngine(clock), waiter);
+        var ticked = SpinWait.SpinUntil(() => clock.Count >= 2, TimeSpan.FromSeconds(2));
+        StopRun(thread);
+
+        Assert.True(ticked, $"Tick の最中に起こしてから 2 秒以内に次の Tick が行われませんでした（回数 {clock.Count}）");
+        Assert.Empty(Errors());
+    }
+
+    [Fact]
+    public void Run_WakeableWaiterWokenContinuously_TickSpacingIsAtLeastDefaultMinInterval()
+    {
+        var clock = new CountingClock();
+        using var waiter = new WakeableWaiter();
+        var thread = StartRun(CreateEngine(clock), waiter);
+
+        // Hub がまとめて書くときの代わりに、1 秒間 1 ms おきに起こす
+        var start = Stopwatch.GetTimestamp();
+        while (Stopwatch.GetElapsedTime(start) < TimeSpan.FromSeconds(1))
+        {
+            waiter.Wake();
+            Thread.Sleep(1);
+        }
+        StopRun(thread);
+
+        var times = clock.ReadTimes();
+        Assert.True(times.Length >= 3, $"Tick の回数が少なすぎます（{times.Length}）");
+        var tolerance = TimeSpan.FromMilliseconds(10);
+        for (var i = 1; i < times.Length; i++)
+        {
+            var spacing = times[i] - times[i - 1];
+            Assert.True(spacing >= WakeableWaiter.DefaultMinInterval - tolerance, $"Tick {i} と {i + 1} の間隔が {spacing.TotalMilliseconds} ms");
+        }
+        Assert.Empty(Errors());
+    }
+
+    [Fact]
+    public void Run_WakeableWaiterCanceledThenWoken_DoesNotTickAfterCancellation()
+    {
+        var clock = new CountingClock();
+        using var waiter = new WakeableWaiter();
+        var thread = StartRun(CreateEngine(clock), waiter);
+        Thread.Sleep(200);
+
+        _cts.Cancel();
+        waiter.Wake();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(5)), "監視ループが 5 秒以内に終わりませんでした");
+        Thread.Sleep(500);
+
+        Assert.Equal(0, clock.Count);
+        Assert.Empty(_switcher.Calls);
+        Assert.Empty(Errors());
     }
 
     // ---- SystemWaiter（実際に長く待たない条件だけを確かめる） ----

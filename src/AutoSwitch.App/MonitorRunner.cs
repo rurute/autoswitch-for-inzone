@@ -10,11 +10,14 @@ internal sealed class MonitorRunner : IDisposable
 {
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ExtendedStopTimeout = TimeSpan.FromSeconds(25);
+    private static readonly TimeSpan WatcherStopTimeout = TimeSpan.FromSeconds(2);
 
     private readonly AutoSwitchEngine _engine;
     private readonly AppSettings _settings;
     private readonly IAppLogger _logger;
     private readonly CancellationTokenSource _cancellation = new();
+    private readonly WakeableWaiter _waiter = new();
+    private readonly LogChangeWatcher _watcher;
     private readonly Thread _thread;
 
     public MonitorRunner(AutoSwitchEngine engine, AppSettings settings, IAppLogger logger)
@@ -22,6 +25,8 @@ internal sealed class MonitorRunner : IDisposable
         _engine = engine;
         _settings = settings;
         _logger = logger;
+        // ActionLog.log が変わったら監視ループの待機を起こし、1 秒待たずに読ませる
+        _watcher = new LogChangeWatcher(settings.ActionLogPath, _waiter.Wake, logger);
         _thread = new Thread(Run)
         {
             IsBackground = true,
@@ -29,13 +34,17 @@ internal sealed class MonitorRunner : IDisposable
         };
     }
 
-    /// <summary>監視スレッドの終了を確認できたか。Dispose のあとに読む</summary>
+    /// <summary>監視スレッドの終了と、変更通知の見張りの破棄を確認できたか。Dispose のあとに読む</summary>
     public bool StoppedCleanly { get; private set; }
 
     public void Start() => _thread.Start();
 
     private void Run()
     {
+        // 起動時同期より前に始め、その間の変更も起こした印として残す（次の待機がすぐ終わる）。
+        // 始められなくても例外は出ず、時間だけで読み続ける
+        _watcher.Start();
+
         // 起動時同期の失敗で常駐そのものを止めない（トレイ版では「トレイが出ない」形でしか表に出ないため）
         // 取り消し済みなら切り替えは行われない（StartupSync が自分で判定する）
         try
@@ -49,7 +58,7 @@ internal sealed class MonitorRunner : IDisposable
 
         try
         {
-            MonitorLoop.Run(_engine, _settings, _logger, new SystemWaiter(), _cancellation.Token);
+            MonitorLoop.Run(_engine, _settings, _logger, _waiter, _cancellation.Token);
         }
         catch (Exception ex)
         {
@@ -67,10 +76,14 @@ internal sealed class MonitorRunner : IDisposable
         {
         }
 
+        // これ以後は待機を起こさない。破棄済みの待機を起こしても例外は出ないが、先に止めておく
+        var watcherStopped = StopWatcher();
+
         if (!_thread.IsAlive || _thread.Join(StopTimeout))
         {
-            StoppedCleanly = true;
+            StoppedCleanly = watcherStopped;
             _cancellation.Dispose();
+            _waiter.Dispose();
             return;
         }
 
@@ -81,15 +94,41 @@ internal sealed class MonitorRunner : IDisposable
 
         if (_thread.Join(ExtendedStopTimeout))
         {
-            StoppedCleanly = true;
+            StoppedCleanly = watcherStopped;
             _cancellation.Dispose();
+            _waiter.Dispose();
             return;
         }
 
         // spec §4 の「監視を停止してリソースを解放する」をここでは確認できない。
         // 終了操作を無制限にハングさせないため待たずに進むが、成功としては報告しない
         // （StoppedCleanly を false のままにし、Program が終了コード1で終わる）。
-        // まだ token を触っている可能性があるので CancellationTokenSource は破棄しない
+        // まだ token と待機を触っている可能性があるので CancellationTokenSource と待機は破棄しない
         BoundedLog.Write(_logger, LogLevel.Error, "監視スレッドが30秒以内に終了しませんでした。監視の停止と音声操作の解放を確認できません。");
+    }
+
+    // 見張りの破棄は、見張りの開始やエラー処理がログの書き込みで止まっていると、その間ずっと待つ。
+    // BoundedLog と同じく別スレッドへ出して待つ時間だけを区切り、上の 5 秒・25 秒の経路を止めない。
+    // 待ち切れなければ破棄を確認できなかったとして、成功としては報告しない（StoppedCleanly を false にする）。
+    // 破棄が遅れて通知が届いても、破棄済みの待機を起こして例外は出ない
+    private bool StopWatcher()
+    {
+        bool stopped;
+        try
+        {
+            stopped = Task.Run(_watcher.Dispose).Wait(WatcherStopTimeout);
+        }
+        catch (Exception)
+        {
+            // LogChangeWatcher は例外を外へ出さないのでここへは来ない想定。来たとしても、終了を止めない
+            stopped = false;
+        }
+
+        if (!stopped)
+        {
+            BoundedLog.Write(_logger, LogLevel.Warn, "ActionLog.log の変更通知の見張りを2秒で止められませんでした。待たずに終了処理を進めます。");
+        }
+
+        return stopped;
     }
 }

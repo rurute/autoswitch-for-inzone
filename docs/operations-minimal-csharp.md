@@ -91,6 +91,7 @@ Start-ScheduledTask  -TaskName 'INZONE Auto Switch'
 - `[WARN]` — ActionLog.log を読めない、登録状態を読み取れない、といった行
 - `自動起動:` — 起動時に Run キーを読めたときに `[INFO]` で1行出る。そのとき Run キーがどうだったかが分かる（例: `自動起動: 有効（HKCU\Software\Microsoft\Windows\CurrentVersion\Run）`）。読めなかったときはこの行の代わりに `[WARN] 自動起動の登録状態を読み取れません` が出る。また `config.json` の `logLevel` を `Warn` か `Error` にしているとこの `[INFO]` の行は落ちる（既定は `Info`）。**この行が無いことは、新版が起動しなかった証拠にはならない。** いま動いているかどうかは、`@(Get-Process -Name 'AutoSwitch.App' -ErrorAction SilentlyContinue).Count` で見る
 - `録音の切り替え:` — 起動時に `[INFO]` で1行出る。録音の切り替え先の設定が分かる（例: `録音の切り替え: 接続時=ヘッドセット マイク (INZONE Buds - Chat) / 切断時=（未設定）`）。「7. 録音デバイスも切り替える」を参照
+- `ActionLog.log の変更通知` — 起動時に `[INFO] ActionLog.log の変更通知を受け取ります。` が出れば、変更をすぐ読む。`[WARN] ActionLog.log の変更通知を受け取れません。` のときは 1 秒ごとの読み取りだけで動いている（INZONE Hub のフォルダができれば自動で始まる）。`[WARN] ActionLog.log の変更通知でエラーが発生しました。` は見張りを作り直した印で、その間も 1 秒ごとの読み取りは続く
 - `状態遷移を検知しました:` — Buds の接続・切断を拾えているか
 - `既定の再生デバイスを切り替えました:` — 実際に切り替えたか
 - `既定の録音デバイスを切り替えました:` — 録音も実際に切り替えたか。`録音デバイスが見つかりません:` は、設定した名前が有効な録音デバイスの一覧に無いことを表す
