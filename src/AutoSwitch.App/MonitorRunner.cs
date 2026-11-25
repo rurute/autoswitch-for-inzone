@@ -10,23 +10,35 @@ internal sealed class MonitorRunner : IDisposable
 {
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ExtendedStopTimeout = TimeSpan.FromSeconds(25);
-    private static readonly TimeSpan WatcherStopTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan TransportStopTimeout = TimeSpan.FromSeconds(2);
 
     private readonly AutoSwitchEngine _engine;
     private readonly AppSettings _settings;
     private readonly IAppLogger _logger;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly WakeableWaiter _waiter = new();
-    private readonly LogChangeWatcher _watcher;
+    private readonly IBudsTransport _transport;
+    private readonly NotificationWaker _notifier;
     private readonly Thread _thread;
 
-    public MonitorRunner(AutoSwitchEngine engine, AppSettings settings, IAppLogger logger)
+    /// <summary>transport の所有権を受け取り、Dispose で破棄する</summary>
+    public MonitorRunner(AutoSwitchEngine engine, AppSettings settings, IAppLogger logger, IBudsTransport transport)
     {
         _engine = engine;
         _settings = settings;
         _logger = logger;
-        // ActionLog.log が変わったら監視ループの待機を起こし、1 秒待たずに読ませる
-        _watcher = new LogChangeWatcher(settings.ActionLogPath, _waiter.Wake, logger);
+        _transport = transport;
+
+        // ドングルの知らせで監視ループの待機を起こし、通常の間隔を待たずに問い合わせさせる。
+        // 知らせのあとの問い合わせが Connected なら、1 秒後にもう 1 回起こす（NotificationWaker）。
+        // 購読はここで済ませる。フレームが届くのは監視スレッドの問い合わせでドングルを開いてから
+        _notifier = new NotificationWaker(
+            _waiter.Wake,
+            (delay, action) => new System.Threading.Timer(_ => action(), null, delay, Timeout.InfiniteTimeSpan));
+        _transport.FrameReceived += _notifier.OnFrame;
+        _engine.QueryStarting += _notifier.OnQueryStarting;
+        _engine.QueryCompleted += _notifier.OnQueryCompleted;
+
         _thread = new Thread(Run)
         {
             IsBackground = true,
@@ -34,22 +46,23 @@ internal sealed class MonitorRunner : IDisposable
         };
     }
 
-    /// <summary>監視スレッドの終了と、変更通知の見張りの破棄を確認できたか。Dispose のあとに読む</summary>
+    /// <summary>監視スレッドの終了と、ドングルとの通信の破棄を確認できたか。Dispose のあとに読む</summary>
     public bool StoppedCleanly { get; private set; }
 
     public void Start() => _thread.Start();
 
     private void Run()
     {
-        // 起動時同期より前に始め、その間の変更も起こした印として残す（次の待機がすぐ終わる）。
-        // 始められなくても例外は出ず、時間だけで読み続ける
-        _watcher.Start();
-
-        // 起動時同期の失敗で常駐そのものを止めない（トレイ版では「トレイが出ない」形でしか表に出ないため）
+        // 起動時の判定の失敗で常駐そのものを止めない（トレイ版では「トレイが出ない」形でしか表に出ないため）
         // 取り消し済みなら切り替えは行われない（StartupSync が自分で判定する）
         try
         {
             _engine.StartupSync(_cancellation.Token);
+        }
+        catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
+        {
+            // 起動時の問い合わせの最中に終了が要求された。監視ループへは進まない（エラーではない）
+            return;
         }
         catch (Exception ex)
         {
@@ -77,11 +90,17 @@ internal sealed class MonitorRunner : IDisposable
         }
 
         // これ以後は待機を起こさない。破棄済みの待機を起こしても例外は出ないが、先に止めておく
-        var watcherStopped = StopWatcher();
+        _transport.FrameReceived -= _notifier.OnFrame;
+        _engine.QueryStarting -= _notifier.OnQueryStarting;
+        _engine.QueryCompleted -= _notifier.OnQueryCompleted;
+        _notifier.Dispose();
+
+        // 取り消しで、問い合わせの返答待ちはすぐ終わる。ハンドルを閉じて読み取りを止める
+        var transportStopped = StopTransport();
 
         if (!_thread.IsAlive || _thread.Join(StopTimeout))
         {
-            StoppedCleanly = watcherStopped;
+            StoppedCleanly = transportStopped;
             _cancellation.Dispose();
             _waiter.Dispose();
             return;
@@ -94,7 +113,7 @@ internal sealed class MonitorRunner : IDisposable
 
         if (_thread.Join(ExtendedStopTimeout))
         {
-            StoppedCleanly = watcherStopped;
+            StoppedCleanly = transportStopped;
             _cancellation.Dispose();
             _waiter.Dispose();
             return;
@@ -107,26 +126,26 @@ internal sealed class MonitorRunner : IDisposable
         BoundedLog.Write(_logger, LogLevel.Error, "監視スレッドが30秒以内に終了しませんでした。監視の停止と音声操作の解放を確認できません。");
     }
 
-    // 見張りの破棄は、見張りの開始やエラー処理がログの書き込みで止まっていると、その間ずっと待つ。
+    // ドングルの破棄（読み取りの停止を最大 2 秒待つ）は、ログの書き込みなどで止まると、その間ずっと待つ。
     // BoundedLog と同じく別スレッドへ出して待つ時間だけを区切り、上の 5 秒・25 秒の経路を止めない。
     // 待ち切れなければ破棄を確認できなかったとして、成功としては報告しない（StoppedCleanly を false にする）。
-    // 破棄が遅れて通知が届いても、破棄済みの待機を起こして例外は出ない
-    private bool StopWatcher()
+    // 破棄が遅れてフレームが届いても、購読は外してあり、破棄済みの待機を起こしても例外は出ない
+    private bool StopTransport()
     {
         bool stopped;
         try
         {
-            stopped = Task.Run(_watcher.Dispose).Wait(WatcherStopTimeout);
+            stopped = Task.Run(_transport.Dispose).Wait(TransportStopTimeout);
         }
         catch (Exception)
         {
-            // LogChangeWatcher は例外を外へ出さないのでここへは来ない想定。来たとしても、終了を止めない
+            // 破棄の例外でも終了を止めない。破棄を確認できなかったとして扱う
             stopped = false;
         }
 
         if (!stopped)
         {
-            BoundedLog.Write(_logger, LogLevel.Warn, "ActionLog.log の変更通知の見張りを2秒で止められませんでした。待たずに終了処理を進めます。");
+            BoundedLog.Write(_logger, LogLevel.Warn, "INZONE Buds のドングルを 2 秒で閉じられませんでした。待たずに終了処理を進めます。");
         }
 
         return stopped;

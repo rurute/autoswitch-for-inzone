@@ -1,5 +1,6 @@
 using System.Windows.Forms;
 using AutoSwitch.Core;
+using AutoSwitch.Hid;
 
 namespace AutoSwitch.App;
 
@@ -55,27 +56,30 @@ internal static class Program
 
             if (createError is not null)
             {
-                logger.Write(LogLevel.Warn, $"既定値の設定ファイルを作成できません: {AppPaths.ConfigPath}: {createError.Message}");
+                logger.Write(LogLevel.Warn, $"既定値の設定ファイルを作成できません: {AppPaths.ForLog(createError.Message)}");
             }
             if (created)
             {
-                logger.Write(LogLevel.Info, $"既定値の設定ファイルを作成しました: {AppPaths.ConfigPath}");
+                logger.Write(LogLevel.Info, "既定値の設定ファイルを作成しました。");
             }
             foreach (var warning in loadResult.Warnings)
             {
                 logger.Write(LogLevel.Warn, warning);
             }
 
-            logger.Write(LogLevel.Info, $"AutoSwitch for INZONE を開始します。appRoot={AppPaths.AppRoot}");
-            logger.Write(LogLevel.Info, $"監視対象: {settings.ActionLogPath}");
+            logger.Write(LogLevel.Info, "AutoSwitch for INZONE を開始します。");
+            logger.Write(LogLevel.Info, "監視対象: INZONE Buds の USB ドングル（054c:0ec2）");
             logger.Write(LogLevel.Info, settings.DescribeCaptureSwitching());
 
+            // ドングルを開くのは監視スレッドの最初の問い合わせのとき。ここではハンドルを持たない。
+            // 破棄は MonitorRunner が受け持つ（TrayApplicationContext 経由で渡す）
+            var transport = new HidDongleTransport();
             var engine = new AutoSwitchEngine(
                 settings,
                 logger,
                 new AudioSwitcher(() => new CoreAudioSession()),
                 new SystemClock(),
-                new SystemHubProcessProbe());
+                new DongleProbe(transport));
 
             // exe のフルパス。apphost 経由の起動では ProcessPath がその exe を指す
             var autoStart = new AutoStartRegistration(Environment.ProcessPath ?? Application.ExecutablePath);
@@ -88,7 +92,7 @@ internal static class Program
             TrayApplicationContext context;
             try
             {
-                context = new TrayApplicationContext(engine, settings, logger, icons, autoStart);
+                context = new TrayApplicationContext(engine, settings, logger, icons, autoStart, transport);
             }
             catch
             {

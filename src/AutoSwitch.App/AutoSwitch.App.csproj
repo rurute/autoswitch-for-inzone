@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="..\AutoSwitch.Core\AutoSwitch.Core.csproj" />
     <ProjectReference Include="..\AutoSwitch.Audio\AutoSwitch.Audio.csproj" />
+    <ProjectReference Include="..\AutoSwitch.Hid\AutoSwitch.Hid.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="AutoSwitch.App.Tests" />

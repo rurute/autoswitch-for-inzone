@@ -1,9 +1,8 @@
 using System.Diagnostics;
-using System.Text;
 
 namespace AutoSwitch.Core.Tests;
 
-// 旧版 INZONE-AutoSwitch.ps1 の監視ループを基準に、実際の一時ファイルで作ったエンジンと差し替えた待機で検証する。
+// 旧版 INZONE-AutoSwitch.ps1 の監視ループを基準に、偽の問い合わせ（FakeBudsProbe）で作ったエンジンと差し替えた待機で検証する。
 // 待機は ScriptedWaiter が記録するだけで、実際には待たない
 public sealed class MonitorLoopTests : IDisposable
 {
@@ -13,25 +12,19 @@ public sealed class MonitorLoopTests : IDisposable
 
     private static readonly DateTime NowUtc = new(2026, 9, 15, 6, 36, 40, DateTimeKind.Utc);
 
-    private readonly string _dir;
-    private readonly string _path;
     private readonly ListLogger _logger = new();
     private readonly RecordingSwitcher _switcher = new();
     private readonly FakeClock _clock = new(NowUtc);
-    private readonly FakeHubProcessProbe _hub = new() { StartTimeUtc = NowUtc.AddMinutes(-30) };
+    private readonly FakeBudsProbe _probe = new();
     private readonly CancellationTokenSource _cts = new();
     private AppSettings _settings;
 
     public MonitorLoopTests()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "mlt-" + Guid.NewGuid().ToString());
-        Directory.CreateDirectory(_dir);
-        _path = Path.Combine(_dir, "ActionLog.log");
         _settings = AppSettings.Default with
         {
             BudsDevice = "BUDS",
             SpeakerDevice = "SPEAKER",
-            ActionLogPath = _path,
             PollIntervalSeconds = PollSeconds,
             IdlePollIntervalSeconds = IdleSeconds,
         };
@@ -41,29 +34,20 @@ public sealed class MonitorLoopTests : IDisposable
     {
         _cts.Cancel();
         _cts.Dispose();
-        try
-        {
-            Directory.Delete(_dir, recursive: true);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
     }
 
-    private AutoSwitchEngine CreateEngine() => new(_settings, _logger, _switcher, _clock, _hub);
+    private AutoSwitchEngine CreateEngine() => new(_settings, _logger, _switcher, _clock, _probe);
 
     private void Run(AutoSwitchEngine engine, ScriptedWaiter waiter) =>
         MonitorLoop.Run(engine, _settings, _logger, waiter, _cts.Token);
 
-    private void WriteConnectEvent()
-    {
-        var timeStampMs = new DateTimeOffset(NowUtc, TimeSpan.Zero).ToUnixTimeMilliseconds();
-        var line = $"{{\"logVersion\":\"1.5\",\"logId\":\"c1\",\"timeStamp\":{timeStampMs},\"actionTypeId\":23011,\"actionTypeName\":\"ConnectDevice\"}}\n";
-        File.WriteAllText(_path, line, new UTF8Encoding(true));
-    }
+    // 問い合わせの結果を Connected にする（以前の「接続イベントを書く」の代わり）。
+    // MonitorLoop.Run は StartupSync を呼ばないので、最初の Tick が合わせ直しとして BUDS へ切り替える
+    private void ReportConnected() =>
+        _probe.Results.Enqueue(new ProbeResult(ProbeStatus.Connected, new BudsLevels(100, 100, 100)));
+
+    // 問い合わせの結果を Disconnected にする（以前の「ログが無い」の代わり。Tick の回数や間隔だけを見るテストに使う）
+    private void ReportDisconnected() => _probe.Results.Enqueue(new ProbeResult(ProbeStatus.Disconnected));
 
     private static TimeSpan[] Seconds(params int[] values) => values.Select(v => TimeSpan.FromSeconds(v)).ToArray();
 
@@ -78,7 +62,7 @@ public sealed class MonitorLoopTests : IDisposable
     [Fact]
     public void Run_WaitTrueThenFalse_TicksOnceAfterPollIntervalAndEnds()
     {
-        WriteConnectEvent();
+        ReportConnected();
         var engine = CreateEngine();
         var waiter = new ScriptedWaiter().Returns(true, false);
 
@@ -93,7 +77,7 @@ public sealed class MonitorLoopTests : IDisposable
     [Fact]
     public void Run_FirstWaitFalse_EndsWithoutTick()
     {
-        WriteConnectEvent();
+        ReportConnected();
         var engine = CreateEngine();
         var waiter = new ScriptedWaiter().Returns(false);
 
@@ -102,13 +86,14 @@ public sealed class MonitorLoopTests : IDisposable
         Assert.Equal(Seconds(PollSeconds), waiter.Durations);
         Assert.Equal(HeadsetState.Unknown, engine.State);
         Assert.Empty(_switcher.Calls);
+        Assert.Equal(0, _probe.CallCount);
         Assert.Empty(Errors());
     }
 
     [Fact]
     public void Run_TokenCanceledBeforeWait_EndsWithoutWaitOrTick()
     {
-        WriteConnectEvent();
+        ReportConnected();
         var engine = CreateEngine();
         var waiter = new ScriptedWaiter().Returns(true, true);
         _cts.Cancel();
@@ -118,13 +103,14 @@ public sealed class MonitorLoopTests : IDisposable
         Assert.Empty(waiter.Durations);
         Assert.Equal(HeadsetState.Unknown, engine.State);
         Assert.Empty(_switcher.Calls);
+        Assert.Equal(0, _probe.CallCount);
         Assert.Empty(Errors());
     }
 
     [Fact]
     public void Run_TokenCanceledDuringTickIteration_EndsBeforeNextWait()
     {
-        WriteConnectEvent();
+        ReportConnected();
         var engine = CreateEngine();
         var waiter = new ScriptedWaiter().Does(() =>
         {
@@ -137,6 +123,7 @@ public sealed class MonitorLoopTests : IDisposable
         Assert.Equal(Seconds(PollSeconds), waiter.Durations);
         Assert.Equal(HeadsetState.Unknown, engine.State);
         Assert.Empty(_switcher.Calls);
+        Assert.Equal(0, _probe.CallCount);
         Assert.Empty(Errors());
     }
 
@@ -161,14 +148,14 @@ public sealed class MonitorLoopTests : IDisposable
     [Fact]
     public void Run_SwitcherThrows_LogsErrorWaitsFiveSecondsThenIdleAndContinues()
     {
-        WriteConnectEvent();
+        ReportConnected();
         _switcher.Exception = new InvalidOperationException("切り替えで例外");
         var engine = CreateEngine();
         var waiter = new ScriptedWaiter().Returns(true, true, true, false);
 
         Run(engine, waiter);
 
-        // poll 間隔で Tick（例外）→ 5 秒 → idle 間隔で Tick（新しいイベントなし）→ poll 間隔
+        // poll 間隔で Tick（例外）→ 5 秒 → idle 間隔で Tick（同じ Connected なので切り替えない）→ poll 間隔
         Assert.Equal(Waits(PollSeconds, -5, IdleSeconds, PollSeconds), waiter.AllWaits);
         Assert.Equal([UnexpectedPrefix + "切り替えで例外"], Errors());
         Assert.Equal(HeadsetState.Connected, engine.State);
@@ -178,7 +165,7 @@ public sealed class MonitorLoopTests : IDisposable
     [Fact]
     public void Run_FirstWaitThrows_LogsErrorWaitsFiveSecondsThenIdleAndContinues()
     {
-        WriteConnectEvent();
+        ReportConnected();
         var engine = CreateEngine();
         var waiter = new ScriptedWaiter()
             .Throws(new InvalidOperationException("待機で例外"))
@@ -195,7 +182,7 @@ public sealed class MonitorLoopTests : IDisposable
     [Fact]
     public void Run_FiveSecondWaitThrows_SwallowsAndContinuesToNextWait()
     {
-        WriteConnectEvent();
+        ReportConnected();
         var engine = CreateEngine();
         var waiter = new ScriptedWaiter()
             .Throws(new InvalidOperationException("待機で例外"))
@@ -212,7 +199,7 @@ public sealed class MonitorLoopTests : IDisposable
     [Fact]
     public void Run_FiveSecondWaitFalse_Ends()
     {
-        WriteConnectEvent();
+        ReportConnected();
         var engine = CreateEngine();
         var waiter = new ScriptedWaiter()
             .Throws(new InvalidOperationException("待機で例外"))
@@ -302,7 +289,7 @@ public sealed class MonitorLoopTests : IDisposable
     private AutoSwitchEngine CreateEngine(CountingClock clock)
     {
         _settings = _settings with { PollIntervalSeconds = LongPollSeconds };
-        return new AutoSwitchEngine(_settings, _logger, _switcher, clock, _hub);
+        return new AutoSwitchEngine(_settings, _logger, _switcher, clock, _probe);
     }
 
     // 監視ループを別スレッドで動かす
@@ -331,7 +318,7 @@ public sealed class MonitorLoopTests : IDisposable
         var thread = StartRun(CreateEngine(clock), waiter);
         Thread.Sleep(200);
 
-        WriteConnectEvent();
+        ReportConnected();
         waiter.Wake();
         var ticked = switched.Wait(TimeSpan.FromSeconds(2));
         StopRun(thread);
@@ -346,6 +333,7 @@ public sealed class MonitorLoopTests : IDisposable
     public void Run_WakeableWaiterWokenManyTimesBeforeRun_TicksOnce()
     {
         // 起こした印を、ループを始める前に 1 つの束にしておく
+        ReportDisconnected();
         var clock = new CountingClock();
         using var waiter = new WakeableWaiter();
         for (var i = 0; i < 50; i++)
@@ -365,6 +353,7 @@ public sealed class MonitorLoopTests : IDisposable
     [Fact]
     public void Run_WakeableWaiterWokenDuringTick_TicksAgainImmediately()
     {
+        ReportDisconnected();
         var clock = new CountingClock();
         using var waiter = new WakeableWaiter();
         // 1 回目の Tick の最中に起こす
@@ -388,6 +377,7 @@ public sealed class MonitorLoopTests : IDisposable
     [Fact]
     public void Run_WakeableWaiterWokenContinuously_TickSpacingIsAtLeastDefaultMinInterval()
     {
+        ReportDisconnected();
         var clock = new CountingClock();
         using var waiter = new WakeableWaiter();
         var thread = StartRun(CreateEngine(clock), waiter);

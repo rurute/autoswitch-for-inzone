@@ -1,248 +1,161 @@
-using System.Text;
-
 namespace AutoSwitch.Core.Tests;
 
-// 旧版 Orchestrator.Tests.ps1 と同じく、実際の一時ファイルと差し替えた時計・Hub 検出・切り替えで検証する
-public sealed class AutoSwitchEngineTests : IDisposable
+// ドングルへの問い合わせ（FakeBudsProbe）の結果を与え、差し替えた時計・切り替えで検証する
+public sealed class AutoSwitchEngineTests
 {
-    private const int ConnectDevice = 23011;
-    private const int DisconnectDevice = 23012;
+    private const int PollSeconds = 3;
+    private const int IdleSeconds = 7;
 
     // 既定の時刻: 2026-09-15 06:36:40Z 固定
     private static readonly DateTime NowUtc = new(2026, 9, 15, 6, 36, 40, DateTimeKind.Utc);
 
-    private readonly string _dir;
-    private readonly string _path;
+    private static readonly ProbeResult Connected = new(ProbeStatus.Connected, new BudsLevels(100, 100, 100));
+    private static readonly ProbeResult Disconnected = new(ProbeStatus.Disconnected);
+    private static readonly ProbeResult Unavailable = new(ProbeStatus.Unavailable, Error: "not found");
+
+    private const string RecoveredMessage = "INZONE Buds のドングルを読めるようになりました。";
+    private const string CancelledMessage = "終了が要求されたため、切り替えを行いません。";
+    private const string ResumeMessage = "長時間のギャップを検知しました（スリープ復帰とみなします）。監視を通常間隔へ戻します。";
+
     private readonly ListLogger _logger = new();
     private readonly RecordingSwitcher _switcher = new();
     private readonly FakeClock _clock = new(NowUtc);
-    private readonly FakeHubProcessProbe _hub = new() { StartTimeUtc = NowUtc.AddMinutes(-30) };
+    private readonly FakeBudsProbe _probe = new();
     private AppSettings _settings;
 
     public AutoSwitchEngineTests()
     {
-        _dir = Path.Combine(Path.GetTempPath(), "ase-" + Guid.NewGuid().ToString());
-        Directory.CreateDirectory(_dir);
-        _path = Path.Combine(_dir, "ActionLog.log");
         _settings = AppSettings.Default with
         {
             BudsDevice = "BUDS",
             SpeakerDevice = "SPEAKER",
-            ActionLogPath = _path,
+            PollIntervalSeconds = PollSeconds,
+            IdlePollIntervalSeconds = IdleSeconds,
         };
     }
 
-    public void Dispose()
+    private AutoSwitchEngine CreateEngine() => new(_settings, _logger, _switcher, _clock, _probe);
+
+    private void Results(params ProbeResult[] results)
     {
-        try
+        foreach (var result in results)
         {
-            Directory.Delete(_dir, recursive: true);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
+            _probe.Results.Enqueue(result);
         }
     }
 
-    private AutoSwitchEngine CreateEngine() => new(_settings, _logger, _switcher, _clock, _hub);
+    private static string UnavailableMessage(int idleSeconds, string error) =>
+        $"INZONE Buds のドングルを読めません。{idleSeconds} 秒おきに探し直します: {error}";
 
-    private static long EpochMs(DateTime utc) => new DateTimeOffset(utc, TimeSpan.Zero).ToUnixTimeMilliseconds();
+    private static string ResyncMessage(HeadsetState state) => $"現在の状態を {state} と判定しました。";
 
-    private static string EventLine(string logId, long timeStampMs, int actionTypeId)
+    private static string ResyncWithoutSwitchMessage(HeadsetState state) =>
+        $"現在の状態を {state} と判定しました。startupSyncMaxAgeMinutes が 0 のため切り替えません。";
+
+    private int Count(LogLevel level, string message) => _logger.Entries.Count(e => e == (level, message));
+
+    private int CountLevel(LogLevel level) => _logger.Entries.Count(e => e.Level == level);
+
+    // 起動時に Disconnected と判定させ（スピーカーへの合わせ直しを 1 回行う）、その記録を消してから返す。
+    // 以後の Tick での切り替えだけを見るテストに使う
+    private AutoSwitchEngine StartedEngine()
     {
-        var name = actionTypeId == ConnectDevice ? "ConnectDevice" : "DisconnectDevice";
-        return $"{{\"logVersion\":\"1.5\",\"logId\":\"{logId}\",\"timeStamp\":{timeStampMs},\"actionTypeId\":{actionTypeId},\"actionTypeName\":\"{name}\"}}";
-    }
-
-    private static string Text(string[] lines) => lines.Length == 0 ? string.Empty : string.Join("\n", lines) + "\n";
-
-    // 旧版テストの Write-LogLines と同じく、書き直しは BOM 付き、追記は BOM なし
-    private void WriteLines(params string[] lines) =>
-        File.WriteAllText(_path, Text(lines), new UTF8Encoding(true));
-
-    private void AppendLines(params string[] lines)
-    {
-        var bytes = new UTF8Encoding(false).GetBytes(Text(lines));
-        using var stream = new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-        stream.Write(bytes, 0, bytes.Length);
-    }
-
-    // ActionLogReader の共有要求（ReadWrite | Delete）を拒む実際の排他ロック
-    private FileStream Lock() => new(_path, FileMode.Open, FileAccess.Read, FileShare.None);
-
-    // ---- StartupSync ----
-
-    [Fact]
-    public void StartupSync_HubNotRunning_DoesNotSwitch()
-    {
-        _hub.StartTimeUtc = null;
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-1)), ConnectDevice));
+        Results(Disconnected);
         var engine = CreateEngine();
-
         engine.StartupSync();
-
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Empty(_switcher.Calls);
-        Assert.Contains((LogLevel.Info, "起動時同期: INZONE Hub が起動していません。切り替えません。"), _logger.Entries);
+        _switcher.Calls.Clear();
+        _switcher.FlowCalls.Clear();
+        _logger.Entries.Clear();
+        return engine;
     }
 
-    [Fact]
-    public void StartupSync_LastEventBeforeHubStart_DoesNotSwitch()
-    {
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddHours(-2)), ConnectDevice));
-        var engine = CreateEngine();
-
-        engine.StartupSync();
-
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Empty(_switcher.Calls);
-        Assert.Contains((LogLevel.Info, "起動時同期: 最終イベントが INZONE Hub の起動より前です。切り替えません。"), _logger.Entries);
-    }
+    // ---- 起動時（StartupSync） ----
 
     [Fact]
-    public void StartupSync_LastEventOlderThanMaxAge_DoesNotSwitch()
+    public void StartupSync_Connected_SwitchesToBuds()
     {
-        _hub.StartTimeUtc = NowUtc.AddHours(-6);
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-11)), ConnectDevice));
-        var engine = CreateEngine();
-
-        engine.StartupSync();
-
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Empty(_switcher.Calls);
-        // 旧版は '{0:N1}' -f で現在のカルチャの書式にする
-        Assert.Contains((LogLevel.Info, $"起動時同期: 最終イベントが古すぎます（{11.0:N1} 分前）。切り替えません。"), _logger.Entries);
-    }
-
-    [Fact]
-    public void StartupSync_RecentConnectEvent_SwitchesToBudsOnce()
-    {
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
+        Results(Connected);
         var engine = CreateEngine();
 
         engine.StartupSync();
 
         Assert.Equal(HeadsetState.Connected, engine.State);
         Assert.Equal(["BUDS"], _switcher.Calls);
-        Assert.Equal(_settings.PollIntervalSeconds, engine.NextDelaySeconds);
-        Assert.Contains((LogLevel.Info, "起動時同期: 現在の状態を Connected と判定しました。"), _logger.Entries);
+        Assert.Equal(PollSeconds, engine.NextDelaySeconds);
+        Assert.Equal(1, Count(LogLevel.Info, ResyncMessage(HeadsetState.Connected)));
+        Assert.Equal(1, _probe.CallCount);
     }
 
     [Fact]
-    public void StartupSync_MultipleEvents_UsesLastEvent()
+    public void StartupSync_Disconnected_SwitchesToSpeaker()
     {
-        WriteLines(
-            EventLine("e1", EpochMs(NowUtc.AddMinutes(-5)), ConnectDevice),
-            EventLine("e2", EpochMs(NowUtc.AddMinutes(-2)), DisconnectDevice));
+        Results(Disconnected);
         var engine = CreateEngine();
 
         engine.StartupSync();
 
         Assert.Equal(HeadsetState.Disconnected, engine.State);
         Assert.Equal(["SPEAKER"], _switcher.Calls);
+        Assert.Equal(PollSeconds, engine.NextDelaySeconds);
+        Assert.Equal(1, Count(LogLevel.Info, ResyncMessage(HeadsetState.Disconnected)));
     }
 
     [Fact]
-    public void StartupSync_ThenTick_DoesNotRefireSyncedEvent()
-    {
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
-        var engine = CreateEngine();
-
-        engine.StartupSync();
-        engine.Tick();
-
-        Assert.Single(_switcher.Calls);
-    }
-
-    [Fact]
-    public void StartupSync_MaxAgeZero_SkipsExistingLinesWithoutSwitching()
+    public void StartupSync_SyncDisabled_SetsStateWithoutSwitching()
     {
         _settings = _settings with { StartupSyncMaxAgeMinutes = 0 };
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
-        var engine = CreateEngine();
-
-        engine.StartupSync();
-        engine.Tick();
-
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Empty(_switcher.Calls);
-        Assert.Contains((LogLevel.Info, "起動時同期は無効です。既存のログは読み飛ばしました。"), _logger.Entries);
-    }
-
-    [Fact]
-    public void StartupSync_LogMissing_WaitsWithIdleInterval()
-    {
-        var engine = CreateEngine();
-
-        engine.StartupSync();
-
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Equal(_settings.IdlePollIntervalSeconds, engine.NextDelaySeconds);
-        Assert.Contains((LogLevel.Info, "ActionLog.log がまだありません。INZONE Hub の起動を待機します。"), _logger.Entries);
-    }
-
-    // 以下、表の外。旧版 Orchestrator.psm1 の分岐と境界を確認する
-
-    [Fact]
-    public void StartupSync_ReadError_WaitsWithIdleIntervalAndWarns()
-    {
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
-        var engine = CreateEngine();
-
-        using (Lock())
-        {
-            engine.StartupSync();
-        }
-
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Empty(_switcher.Calls);
-        Assert.Equal(_settings.IdlePollIntervalSeconds, engine.NextDelaySeconds);
-        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Warn && e.Message.StartsWith("起動時同期: ActionLog.log を読めません: ", StringComparison.Ordinal));
-    }
-
-    // 旧版はイベントが無ければ Hub のプロセスを調べずに終える
-    [Fact]
-    public void StartupSync_NoEvents_DoesNotSwitchOrProbeHub()
-    {
-        WriteLines("{\"logId\":\"x1\",\"timeStamp\":1000,\"actionTypeId\":23004}");
-        var engine = CreateEngine();
-
-        engine.StartupSync();
-
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Empty(_switcher.Calls);
-        Assert.Equal(0, _hub.CallCount);
-        Assert.Equal(_settings.PollIntervalSeconds, engine.NextDelaySeconds);
-        Assert.Contains((LogLevel.Info, "起動時同期: 判定できるイベントがありません。切り替えません。"), _logger.Entries);
-    }
-
-    // 旧版は「上限より古い」を -gt で判定するため、ちょうど上限なら切り替える
-    [Fact]
-    public void StartupSync_LastEventExactlyMaxAge_Switches()
-    {
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-_settings.StartupSyncMaxAgeMinutes)), ConnectDevice));
+        Results(Connected);
         var engine = CreateEngine();
 
         engine.StartupSync();
 
         Assert.Equal(HeadsetState.Connected, engine.State);
-        Assert.Equal(["BUDS"], _switcher.Calls);
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(PollSeconds, engine.NextDelaySeconds);
+        Assert.Equal(1, Count(LogLevel.Info, ResyncWithoutSwitchMessage(HeadsetState.Connected)));
     }
 
-    // 旧版は「Hub 起動より前」を -lt で判定するため、起動時刻ちょうどなら切り替える
     [Fact]
-    public void StartupSync_LastEventExactlyAtHubStart_Switches()
+    public void StartupSync_Unavailable_StaysUnknownWithIdleDelay()
     {
-        _hub.StartTimeUtc = NowUtc.AddMinutes(-3);
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-3)), DisconnectDevice));
+        Results(Unavailable);
         var engine = CreateEngine();
 
         engine.StartupSync();
 
-        Assert.Equal(HeadsetState.Disconnected, engine.State);
-        Assert.Equal(["SPEAKER"], _switcher.Calls);
+        Assert.Equal(HeadsetState.Unknown, engine.State);
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(IdleSeconds, engine.NextDelaySeconds);
+        Assert.Equal(1, CountLevel(LogLevel.Warn));
+        Assert.Equal(1, Count(LogLevel.Warn, UnavailableMessage(IdleSeconds, "not found")));
+    }
+
+    // 起動時の合わせ直しは 1 回だけ。同じ状態が続いても次の Tick では切り替えない
+    [Fact]
+    public void StartupSync_ThenTickSameState_DoesNotSwitchAgain()
+    {
+        Results(Connected, Connected);
+        var engine = CreateEngine();
+
+        engine.StartupSync();
+        engine.Tick();
+
+        Assert.Equal(["BUDS"], _switcher.Calls);
+    }
+
+    [Fact]
+    public void StartupSync_Cancelled_DoesNotSwitch()
+    {
+        Results(Connected);
+        var engine = CreateEngine();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        engine.StartupSync(cancellation.Token);
+
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(HeadsetState.Unknown, engine.State);
+        Assert.Equal(1, Count(LogLevel.Info, CancelledMessage));
     }
 
     // ---- Tick ----
@@ -253,35 +166,46 @@ public sealed class AutoSwitchEngineTests : IDisposable
         var engine = CreateEngine();
 
         Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Equal(0, engine.ConsecutiveErrors);
-        Assert.Equal(_settings.PollIntervalSeconds, engine.NextDelaySeconds);
+        Assert.Equal(PollSeconds, engine.NextDelaySeconds);
+        Assert.Equal(0, _probe.CallCount);
     }
 
     [Fact]
-    public void Tick_ConnectEventAppended_SwitchesToBuds()
+    public void Tick_SameState_DoesNotSwitch()
     {
-        WriteLines();
-        var engine = CreateEngine();
+        var engine = StartedEngine();
+        Results(Disconnected, Disconnected);
+
+        engine.Tick();
         engine.Tick();
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        Assert.Equal(HeadsetState.Disconnected, engine.State);
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(2, Count(LogLevel.Debug, "状態は Disconnected のままです。切り替えません。"));
+        Assert.Equal(PollSeconds, engine.NextDelaySeconds);
+    }
+
+    [Fact]
+    public void Tick_StateChanged_SwitchesOnce()
+    {
+        var engine = StartedEngine();
+        Results(Connected, Connected);
+
+        engine.Tick();
         engine.Tick();
 
         Assert.Equal(HeadsetState.Connected, engine.State);
         Assert.Equal(["BUDS"], _switcher.Calls);
-        Assert.Contains((LogLevel.Info, "状態遷移を検知しました: Connected"), _logger.Entries);
+        Assert.Equal(1, Count(LogLevel.Info, "状態遷移を検知しました: Connected"));
     }
 
     [Fact]
     public void Tick_ConnectThenDisconnect_SwitchesToBudsThenSpeaker()
     {
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
+        var engine = StartedEngine();
+        Results(Connected, Disconnected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
         engine.Tick();
 
         Assert.Equal(HeadsetState.Disconnected, engine.State);
@@ -289,31 +213,12 @@ public sealed class AutoSwitchEngineTests : IDisposable
     }
 
     [Fact]
-    public void Tick_ConnectTwice_SwitchesOnlyOnce()
-    {
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
-
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
-        engine.Tick();
-        AppendLines(EventLine("c2", 5000, ConnectDevice));
-        engine.Tick();
-
-        Assert.Equal(HeadsetState.Connected, engine.State);
-        Assert.Single(_switcher.Calls);
-        Assert.Contains((LogLevel.Debug, "状態は Connected のままです。切り替えません。"), _logger.Entries);
-    }
-
-    [Fact]
     public void Tick_SwitchOnConnectFalse_UpdatesStateWithoutSwitching()
     {
         _settings = _settings with { SwitchOnConnect = false };
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
+        var engine = StartedEngine();
+        Results(Connected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
 
         Assert.Equal(HeadsetState.Connected, engine.State);
@@ -325,13 +230,10 @@ public sealed class AutoSwitchEngineTests : IDisposable
     public void Tick_SwitchOnDisconnectFalse_UpdatesStateWithoutSwitching()
     {
         _settings = _settings with { SwitchOnDisconnect = false };
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
+        var engine = StartedEngine();
+        Results(Connected, Disconnected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
         engine.Tick();
 
         Assert.Equal(HeadsetState.Disconnected, engine.State);
@@ -339,244 +241,297 @@ public sealed class AutoSwitchEngineTests : IDisposable
         Assert.Contains((LogLevel.Info, "switchOnDisconnect が false のため切り替えません。"), _logger.Entries);
     }
 
-    [Fact]
-    public void Tick_MultipleEventsInOneAppend_AppliesInOrder()
-    {
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
-
-        AppendLines(
-            EventLine("m1", 1000, ConnectDevice),
-            EventLine("m2", 2000, DisconnectDevice),
-            EventLine("m3", 3000, ConnectDevice));
-        engine.Tick();
-
-        Assert.Equal(HeadsetState.Connected, engine.State);
-        Assert.Equal(["BUDS", "SPEAKER", "BUDS"], _switcher.Calls);
-    }
+    // ---- 読めないとき・戻ったとき ----
 
     [Fact]
-    public void Tick_TruncatedToFirstLine_DoesNotRefire()
+    public void Tick_Unavailable_KeepsStateAndWarnsOnce()
     {
-        WriteLines(
-            EventLine("t1", 1000, ConnectDevice),
-            EventLine("t2", 2000, DisconnectDevice));
+        Results(Connected, Unavailable, Unavailable, Unavailable);
         var engine = CreateEngine();
+        engine.StartupSync();
+
         engine.Tick();
-        Assert.Equal(HeadsetState.Disconnected, engine.State);
-        Assert.Equal(2, _switcher.Calls.Count);
-
-        // Hub が truncate して1行目だけを書き直した状況（Length < Offset）
-        WriteLines(EventLine("t1", 1000, ConnectDevice));
         engine.Tick();
-
-        Assert.Equal(HeadsetState.Disconnected, engine.State);
-        Assert.Equal(2, _switcher.Calls.Count);
-        Assert.Contains((LogLevel.Info, "ActionLog.log の truncate を検知しました。先頭から読み直します。"), _logger.Entries);
-    }
-
-    [Fact]
-    public void Tick_FileDeleted_KeepsStateWithIdleInterval()
-    {
-        WriteLines(EventLine("k1", 1000, ConnectDevice));
-        var engine = CreateEngine();
-        engine.Tick();
-
-        File.Delete(_path);
-        engine.Tick();
-
-        Assert.Equal(HeadsetState.Connected, engine.State);
-        Assert.Equal(_settings.IdlePollIntervalSeconds, engine.NextDelaySeconds);
-        Assert.Contains((LogLevel.Debug, "ActionLog.log がありません。待機します。"), _logger.Entries);
-    }
-
-    [Fact]
-    public void Tick_FileMissingThenCreated_ResumesMonitoring()
-    {
-        var engine = CreateEngine();
-        engine.Tick();
-        Assert.Equal(_settings.IdlePollIntervalSeconds, engine.NextDelaySeconds);
-
-        WriteLines(EventLine("r1", 1000, ConnectDevice));
         engine.Tick();
 
         Assert.Equal(HeadsetState.Connected, engine.State);
         Assert.Equal(["BUDS"], _switcher.Calls);
-        Assert.Equal(_settings.PollIntervalSeconds, engine.NextDelaySeconds);
+        Assert.Equal(1, CountLevel(LogLevel.Warn));
+        Assert.Equal(1, Count(LogLevel.Warn, UnavailableMessage(IdleSeconds, "not found")));
+        Assert.Equal(IdleSeconds, engine.NextDelaySeconds);
     }
 
     [Fact]
-    public void Tick_ReadErrors_BackOff1To2To4()
+    public void Tick_RecoveredWithSameState_SwitchesAgain()
     {
-        WriteLines();
+        Results(Connected, Unavailable, Connected);
         var engine = CreateEngine();
-
-        using (Lock())
-        {
-            engine.Tick();
-            Assert.Equal(1, engine.NextDelaySeconds);
-            engine.Tick();
-            Assert.Equal(2, engine.NextDelaySeconds);
-            engine.Tick();
-            Assert.Equal(4, engine.NextDelaySeconds);
-        }
-
-        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Warn && e.Message.StartsWith("ActionLog.log の読み取りに失敗しました: ", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void Tick_ReadErrors_BackOffCapsAt60()
-    {
-        WriteLines();
-        var engine = CreateEngine();
-
-        using (Lock())
-        {
-            for (var i = 0; i < 12; i++)
-            {
-                engine.Tick();
-            }
-            Assert.Equal(60, engine.NextDelaySeconds);
-        }
-    }
-
-    [Fact]
-    public void Tick_SuccessAfterErrors_ResetsToPollInterval()
-    {
-        WriteLines();
-        var engine = CreateEngine();
-
-        using (Lock())
-        {
-            engine.Tick();
-            engine.Tick();
-            Assert.Equal(2, engine.NextDelaySeconds);
-        }
-
-        // ロックが外れたので次の tick は成功する
+        engine.StartupSync();
         engine.Tick();
 
-        Assert.Equal(0, engine.ConsecutiveErrors);
-        Assert.Equal(_settings.PollIntervalSeconds, engine.NextDelaySeconds);
+        engine.Tick();
+
+        Assert.Equal(HeadsetState.Connected, engine.State);
+        Assert.Equal(["BUDS", "BUDS"], _switcher.Calls);
+        Assert.Equal(1, Count(LogLevel.Info, RecoveredMessage));
+        Assert.Equal(2, Count(LogLevel.Info, ResyncMessage(HeadsetState.Connected)));
+        Assert.Equal(PollSeconds, engine.NextDelaySeconds);
+    }
+
+    // 合わせ直しは戻ったときの 1 回だけ。その後は状態の変化で切り替える
+    [Fact]
+    public void Tick_RecoveredThenSameState_DoesNotSwitchAgain()
+    {
+        Results(Connected, Unavailable, Connected, Connected);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        engine.Tick();
+        engine.Tick();
+
+        engine.Tick();
+
+        Assert.Equal(["BUDS", "BUDS"], _switcher.Calls);
+    }
+
+    // 読めなくなるたびに Warn を 1 行、戻るたびに Info を 1 行
+    [Fact]
+    public void Tick_UnavailableTwice_WarnsOncePerLoss()
+    {
+        Results(Connected, Unavailable, Unavailable, Connected, Unavailable, Unavailable);
+        var engine = CreateEngine();
+        engine.StartupSync();
+
+        for (var i = 0; i < 5; i++)
+        {
+            engine.Tick();
+        }
+
+        Assert.Equal(2, Count(LogLevel.Warn, UnavailableMessage(IdleSeconds, "not found")));
+        Assert.Equal(1, Count(LogLevel.Info, RecoveredMessage));
+    }
+
+    // 戻ったときも startupSyncMaxAgeMinutes が 0 なら判定だけ（状態が変わっていても切り替えない）
+    [Fact]
+    public void Tick_RecoveredWithSyncDisabled_DoesNotSwitch()
+    {
+        _settings = _settings with { StartupSyncMaxAgeMinutes = 0 };
+        Results(Connected, Unavailable, Disconnected);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        engine.Tick();
+
+        engine.Tick();
+
+        Assert.Equal(HeadsetState.Disconnected, engine.State);
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(1, Count(LogLevel.Info, RecoveredMessage));
+        Assert.Equal(1, Count(LogLevel.Info, ResyncWithoutSwitchMessage(HeadsetState.Disconnected)));
     }
 
     [Fact]
-    public void Tick_LongGap_ResetsBackOff()
+    public void Tick_FoundAfterUnavailableStartup_SwitchesOnce()
     {
-        // ロックを掴んだまま時刻を進めるのが要点。先に解放すると、ギャップ検知を削除しても
-        // 通常の成功経路でリセットされてテストが通ってしまう
-        WriteLines();
+        Results(Unavailable, Disconnected, Disconnected);
         var engine = CreateEngine();
+        engine.StartupSync();
 
-        using (Lock())
-        {
-            for (var i = 0; i < 5; i++)
-            {
-                engine.Tick();
-            }
-            Assert.Equal(5, engine.ConsecutiveErrors);
-            Assert.Equal(16, engine.NextDelaySeconds);
+        engine.Tick();
+        engine.Tick();
 
-            // 1時間後に復帰。ギャップ検知が無ければ6回目のエラーとして 32 秒になる
-            _clock.UtcNow = _clock.UtcNow.AddHours(1);
-            engine.Tick();
-
-            Assert.Equal(1, engine.ConsecutiveErrors);
-            Assert.Equal(1, engine.NextDelaySeconds);
-        }
-
-        Assert.Contains((LogLevel.Info, "長時間のギャップを検知しました（スリープ復帰とみなします）。監視を通常間隔へ戻します。"), _logger.Entries);
+        Assert.Equal(HeadsetState.Disconnected, engine.State);
+        Assert.Equal(["SPEAKER"], _switcher.Calls);
+        Assert.Equal(1, Count(LogLevel.Info, RecoveredMessage));
+        Assert.Equal(1, Count(LogLevel.Info, ResyncMessage(HeadsetState.Disconnected)));
+        Assert.Equal(PollSeconds, engine.NextDelaySeconds);
     }
 
-    // 既定の poll 間隔（1秒）だと係数を外した実装でも通ってしまうので、既定以外の間隔で
-    // plan §5 Task 8 の `poll × 2^(回数-1)` をそのまま確かめる
+    // 切り替えないのは合わせ直しのときだけ。その後の状態の変化では切り替える
     [Fact]
-    public void Tick_ReadErrors_BackOffScalesWithPollInterval()
+    public void Tick_FoundAfterUnavailableStartup_SyncDisabled_DoesNotSwitch()
     {
-        _settings = _settings with { PollIntervalSeconds = 3 };
-        WriteLines();
+        _settings = _settings with { StartupSyncMaxAgeMinutes = 0 };
+        Results(Unavailable, Disconnected, Connected);
         var engine = CreateEngine();
+        engine.StartupSync();
 
-        using (Lock())
-        {
-            engine.Tick();
-            Assert.Equal(3, engine.NextDelaySeconds);
-            engine.Tick();
-            Assert.Equal(6, engine.NextDelaySeconds);
-            engine.Tick();
-            Assert.Equal(12, engine.NextDelaySeconds);
-            engine.Tick();
-            Assert.Equal(24, engine.NextDelaySeconds);
-            engine.Tick();
-            Assert.Equal(48, engine.NextDelaySeconds);
-            // 6回目は 96 になるが 60 で頭打ち
-            engine.Tick();
-            Assert.Equal(60, engine.NextDelaySeconds);
-            engine.Tick();
-            Assert.Equal(60, engine.NextDelaySeconds);
-        }
+        engine.Tick();
+
+        Assert.Equal(HeadsetState.Disconnected, engine.State);
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(1, Count(LogLevel.Info, ResyncWithoutSwitchMessage(HeadsetState.Disconnected)));
+
+        engine.Tick();
+
+        Assert.Equal(HeadsetState.Connected, engine.State);
+        Assert.Equal(["BUDS"], _switcher.Calls);
     }
 
-    // plan §5 Task 8 の「前回からの経過が300秒超」の境界。ちょうど300秒では再開とみなさない
-    [Fact]
-    public void Tick_GapOfExactly300Seconds_DoesNotResetBackOff()
+    // ---- 問い合わせの前後のイベント ----
+
+    [Theory]
+    [InlineData(ProbeStatus.Connected)]
+    [InlineData(ProbeStatus.Disconnected)]
+    [InlineData(ProbeStatus.Unavailable)]
+    public void Tick_RaisesQueryStartingThenQueryCompleted(ProbeStatus status)
     {
-        WriteLines();
-        var engine = CreateEngine();
+        var engine = StartedEngine();
+        var order = new List<string>();
+        engine.QueryStarting += () => order.Add("starting");
+        engine.QueryCompleted += s => order.Add($"completed:{s}");
+        _probe.OnQuery = _ => order.Add("query");
+        Results(new ProbeResult(status));
 
-        using (Lock())
-        {
-            for (var i = 0; i < 5; i++)
-            {
-                engine.Tick();
-            }
-            Assert.Equal(5, engine.ConsecutiveErrors);
-            Assert.Equal(16, engine.NextDelaySeconds);
+        engine.Tick();
 
-            _clock.UtcNow = _clock.UtcNow.AddSeconds(300);
-            engine.Tick();
-
-            Assert.Equal(6, engine.ConsecutiveErrors);
-            Assert.Equal(32, engine.NextDelaySeconds);
-        }
-
-        Assert.DoesNotContain((LogLevel.Info, "長時間のギャップを検知しました（スリープ復帰とみなします）。監視を通常間隔へ戻します。"), _logger.Entries);
+        Assert.Equal(["starting", "query", $"completed:{status}"], order);
     }
 
     [Fact]
-    public void Tick_GapJustOver300Seconds_ResetsBackOff()
+    public void StartupSync_RaisesQueryStartingThenQueryCompleted()
     {
-        WriteLines();
+        Results(Connected);
         var engine = CreateEngine();
+        var order = new List<string>();
+        engine.QueryStarting += () => order.Add("starting");
+        engine.QueryCompleted += s => order.Add($"completed:{s}");
+        _probe.OnQuery = _ => order.Add("query");
 
-        using (Lock())
-        {
-            for (var i = 0; i < 5; i++)
-            {
-                engine.Tick();
-            }
-            Assert.Equal(5, engine.ConsecutiveErrors);
+        engine.StartupSync();
 
-            _clock.UtcNow = _clock.UtcNow.AddSeconds(300).AddMilliseconds(1);
-            engine.Tick();
-
-            Assert.Equal(1, engine.ConsecutiveErrors);
-            Assert.Equal(1, engine.NextDelaySeconds);
-        }
-
-        Assert.Contains((LogLevel.Info, "長時間のギャップを検知しました（スリープ復帰とみなします）。監視を通常間隔へ戻します。"), _logger.Entries);
+        Assert.Equal(["starting", "query", "completed:Connected"], order);
     }
+
+    [Fact]
+    public void Tick_QueryEventHandlersThrow_KeepsMonitoring()
+    {
+        var engine = StartedEngine();
+        engine.QueryStarting += () => throw new InvalidOperationException("starting boom");
+        engine.QueryCompleted += _ => throw new InvalidOperationException("completed boom");
+        Results(Connected);
+
+        engine.Tick();
+
+        Assert.Equal(HeadsetState.Connected, engine.State);
+        Assert.Equal(["BUDS"], _switcher.Calls);
+        Assert.Equal(2, CountLevel(LogLevel.Error));
+        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("starting boom"));
+        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("completed boom"));
+    }
+
+    // 問い合わせが取り消しの例外で終わったら、そのまま外へ出し、QueryCompleted は発火しない
+    [Fact]
+    public void Tick_QueryThrowsCancellation_PropagatesWithoutQueryCompleted()
+    {
+        var engine = StartedEngine();
+        var completed = 0;
+        engine.QueryCompleted += _ => completed++;
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        _probe.OnQuery = token => token.ThrowIfCancellationRequested();
+
+        Assert.ThrowsAny<OperationCanceledException>(() => engine.Tick(cancellation.Token));
+
+        Assert.Equal(0, completed);
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(HeadsetState.Disconnected, engine.State);
+    }
+
+    // ---- 取り消し ----
+
+    [Fact]
+    public void Tick_CancelledDuringQuery_DoesNotSwitch()
+    {
+        var engine = StartedEngine();
+        using var cancellation = new CancellationTokenSource();
+        _probe.OnQuery = _ => cancellation.Cancel();
+        Results(Connected);
+
+        engine.Tick(cancellation.Token);
+
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(HeadsetState.Disconnected, engine.State);
+        Assert.Equal(1, Count(LogLevel.Info, CancelledMessage));
+    }
+
+    [Fact]
+    public void Tick_Cancelled_StopsBeforeSwitching()
+    {
+        var engine = StartedEngine();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        Results(Connected);
+
+        engine.Tick(cancellation.Token);
+
+        Assert.Empty(_switcher.Calls);
+        Assert.Equal(HeadsetState.Disconnected, engine.State);
+        Assert.Equal(1, Count(LogLevel.Info, CancelledMessage));
+    }
+
+    [Fact]
+    public void Tick_CancelledWhileRecovering_DoesNotSwitch()
+    {
+        Results(Connected, Unavailable, Connected);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        engine.Tick();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        engine.Tick(cancellation.Token);
+
+        Assert.Equal(["BUDS"], _switcher.Calls);
+        Assert.Equal(1, Count(LogLevel.Info, CancelledMessage));
+    }
+
+    // ---- スリープ復帰 ----
+
+    [Fact]
+    public void Tick_LongGap_LogsResume()
+    {
+        var engine = StartedEngine();
+        Results(Disconnected);
+
+        _clock.UtcNow = _clock.UtcNow.AddHours(1);
+        engine.Tick();
+
+        Assert.Equal(1, Count(LogLevel.Info, ResumeMessage));
+    }
+
+    // 「前回からの経過が300秒超」の境界。ちょうど300秒では復帰とみなさない
+    [Fact]
+    public void Tick_GapOfExactly300Seconds_DoesNotLogResume()
+    {
+        var engine = StartedEngine();
+        Results(Disconnected);
+
+        _clock.UtcNow = _clock.UtcNow.AddSeconds(300);
+        engine.Tick();
+
+        Assert.Equal(0, Count(LogLevel.Info, ResumeMessage));
+    }
+
+    [Fact]
+    public void Tick_GapJustOver300Seconds_LogsResume()
+    {
+        var engine = StartedEngine();
+        Results(Disconnected);
+
+        _clock.UtcNow = _clock.UtcNow.AddSeconds(300).AddMilliseconds(1);
+        engine.Tick();
+
+        Assert.Equal(1, Count(LogLevel.Info, ResumeMessage));
+    }
+
+    // ---- 切り替えの結果と例外 ----
 
     [Fact]
     public void Tick_DeviceNotFound_DoesNotRetryInSameState()
     {
         _switcher.Result = SwitchResult.DeviceNotFound;
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
+        var engine = StartedEngine();
+        Results(Connected, Connected);
 
-        AppendLines(EventLine("n1", 1000, ConnectDevice));
         engine.Tick();
         engine.Tick();
 
@@ -588,16 +543,13 @@ public sealed class AutoSwitchEngineTests : IDisposable
     public void Tick_FailedSwitch_KeepsMonitoringWithoutRepeatingSameState()
     {
         _switcher.Result = SwitchResult.Failed;
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
+        var engine = StartedEngine();
+        Results(Connected, Connected);
 
-        AppendLines(EventLine("f1", 1000, ConnectDevice));
         engine.Tick();
-        AppendLines(EventLine("f2", 2000, ConnectDevice));
         engine.Tick();
         _switcher.Result = SwitchResult.Switched;
-        AppendLines(EventLine("f3", 3000, DisconnectDevice));
+        Results(Disconnected);
         engine.Tick();
 
         Assert.Equal(["BUDS", "SPEAKER"], _switcher.Calls);
@@ -613,44 +565,22 @@ public sealed class AutoSwitchEngineTests : IDisposable
     public void Tick_SwitchOutcome_IsLoggedAtLevelForResult(SwitchResult result, LogLevel expectedLevel)
     {
         _switcher.Result = result;
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
+        var engine = StartedEngine();
+        Results(Connected);
 
-        AppendLines(EventLine("l1", 1000, ConnectDevice));
         engine.Tick();
 
         Assert.Contains((expectedLevel, $"{result}: BUDS"), _logger.Entries);
     }
 
-    // 以下、表の外。旧版 Orchestrator.psm1 の分岐を確認する
-
-    [Fact]
-    public void Tick_Recreated_LogsAndReadsNewLines()
-    {
-        WriteLines(EventLine("o1", 1000, ConnectDevice));
-        var engine = CreateEngine();
-        engine.Tick();
-
-        // 元より長い別内容へ差し替える
-        WriteLines(EventLine("o2", 2000, DisconnectDevice));
-        engine.Tick();
-
-        Assert.Equal(HeadsetState.Disconnected, engine.State);
-        Assert.Equal(["BUDS", "SPEAKER"], _switcher.Calls);
-        Assert.Contains((LogLevel.Info, "ActionLog.log の再生成を検知しました。先頭から読み直します。"), _logger.Entries);
-    }
-
-    // 切り替えの例外は外へ出す（監視ループが記録する）。旧版と同じく状態は切り替えの前に更新済み
+    // 切り替えの例外は外へ出す（監視ループが記録する）。状態は切り替えの前に更新済み
     [Fact]
     public void Tick_SwitcherThrows_PropagatesAfterUpdatingState()
     {
+        var engine = StartedEngine();
         _switcher.Exception = new InvalidOperationException("simulated switcher failure");
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
+        Results(Connected);
 
-        AppendLines(EventLine("x1", 1000, ConnectDevice));
         var ex = Assert.Throws<InvalidOperationException>(engine.Tick);
 
         Assert.Equal("simulated switcher failure", ex.Message);
@@ -661,66 +591,24 @@ public sealed class AutoSwitchEngineTests : IDisposable
     [Fact]
     public void Constructor_NullArguments_Throw()
     {
-        Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(null!, _logger, _switcher, _clock, _hub));
-        Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(_settings, null!, _switcher, _clock, _hub));
-        Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(_settings, _logger, null!, _clock, _hub));
-        Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(_settings, _logger, _switcher, null!, _hub));
+        Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(null!, _logger, _switcher, _clock, _probe));
+        Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(_settings, null!, _switcher, _clock, _probe));
+        Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(_settings, _logger, null!, _clock, _probe));
+        Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(_settings, _logger, _switcher, null!, _probe));
         Assert.Throws<ArgumentNullException>(() => new AutoSwitchEngine(_settings, _logger, _switcher, _clock, null!));
     }
 
-    // S2: DateTimeOffset.FromUnixTimeMilliseconds の有効範囲
-    private const long MinValidUnixMs = -62135596800000L;
-    private const long MaxValidUnixMs = 253402300799999L;
-
-    [Fact]
-    public void StartupSync_TimeStampAboveRange_LogsAndDoesNotThrow()
-    {
-        File.WriteAllText(_path, Text([EventLine("L1", long.MaxValue, ConnectDevice)]));
-        var engine = CreateEngine();
-
-        engine.StartupSync();
-
-        Assert.Empty(_switcher.Calls);
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Warn && e.Message.Contains("範囲外"));
-    }
-
-    [Fact]
-    public void StartupSync_TimeStampBelowRange_LogsAndDoesNotThrow()
-    {
-        File.WriteAllText(_path, Text([EventLine("L1", long.MinValue, ConnectDevice)]));
-        var engine = CreateEngine();
-
-        engine.StartupSync();
-
-        Assert.Empty(_switcher.Calls);
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Warn && e.Message.Contains("範囲外"));
-    }
-
-    // 境界値は従来どおり受け入れる（範囲外として弾かない）
-    [Fact]
-    public void StartupSync_TimeStampAtUpperBound_IsAccepted()
-    {
-        File.WriteAllText(_path, Text([EventLine("L1", MaxValidUnixMs, ConnectDevice)]));
-        var engine = CreateEngine();
-
-        engine.StartupSync();
-
-        Assert.DoesNotContain(_logger.Entries, e => e.Message.Contains("範囲外"));
-        Assert.Equal(HeadsetState.Connected, engine.State);
-    }
+    // ---- StateChanged ----
 
     [Fact]
     public void Tick_StateChanged_RaisesEventOnce()
     {
-        File.WriteAllText(_path, string.Empty);
-        var engine = CreateEngine();
-        engine.StartupSync();
+        var engine = StartedEngine();
         var raised = new List<HeadsetState>();
         engine.StateChanged += (_, state) => raised.Add(state);
+        Results(Connected, Connected);
 
-        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
+        engine.Tick();
         engine.Tick();
 
         Assert.Equal([HeadsetState.Connected], raised);
@@ -729,29 +617,42 @@ public sealed class AutoSwitchEngineTests : IDisposable
     [Fact]
     public void Tick_SameState_DoesNotRaiseEvent()
     {
-        File.WriteAllText(_path, string.Empty);
-        var engine = CreateEngine();
-        engine.StartupSync();
-        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
+        var engine = StartedEngine();
+        Results(Connected);
         engine.Tick();
         var raised = new List<HeadsetState>();
         engine.StateChanged += (_, state) => raised.Add(state);
 
-        File.WriteAllText(_path, Text([EventLine("L2", EpochMs(NowUtc), ConnectDevice)]));
+        Results(Connected);
         engine.Tick();
 
         Assert.Empty(raised);
     }
 
+    // 戻ったときの合わせ直しで状態が同じなら、StateChanged は発火しない（切り替えは行う）
+    [Fact]
+    public void Tick_RecoveredWithSameState_DoesNotRaiseEvent()
+    {
+        Results(Connected, Unavailable, Connected);
+        var engine = CreateEngine();
+        engine.StartupSync();
+        var raised = new List<HeadsetState>();
+        engine.StateChanged += (_, state) => raised.Add(state);
+
+        engine.Tick();
+        engine.Tick();
+
+        Assert.Empty(raised);
+        Assert.Equal(["BUDS", "BUDS"], _switcher.Calls);
+    }
+
     [Fact]
     public void Tick_StateChangedHandlerThrows_LogsErrorAndKeepsSwitching()
     {
-        File.WriteAllText(_path, string.Empty);
-        var engine = CreateEngine();
-        engine.StartupSync();
+        var engine = StartedEngine();
         engine.StateChanged += (_, _) => throw new InvalidOperationException("boom");
+        Results(Connected);
 
-        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
         engine.Tick();
 
         Assert.Equal(HeadsetState.Connected, engine.State);
@@ -759,104 +660,19 @@ public sealed class AutoSwitchEngineTests : IDisposable
         Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("boom"));
     }
 
-    // F5: 終了が要求されたら、その読み取りの残りのイベントを処理しない
-    [Fact]
-    public void Tick_Cancelled_StopsBeforeSwitching()
-    {
-        File.WriteAllText(_path, string.Empty);
-        var engine = CreateEngine();
-        engine.StartupSync();
-        using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
-
-        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
-        engine.Tick(cancellation.Token);
-
-        Assert.Empty(_switcher.Calls);
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Contains(_logger.Entries, e => e.Message.Contains("残りのイベントの処理を中止"));
-    }
-
-    // F9: 起動時同期も取り消されていれば切り替えない
-    [Fact]
-    public void StartupSync_Cancelled_DoesNotSwitch()
-    {
-        File.WriteAllText(_path, Text([EventLine("L1", EpochMs(NowUtc), ConnectDevice)]));
-        var engine = CreateEngine();
-        using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
-
-        engine.StartupSync(cancellation.Token);
-
-        Assert.Empty(_switcher.Calls);
-        Assert.Equal(HeadsetState.Unknown, engine.State);
-        Assert.Contains(_logger.Entries, e => e.Message.Contains("起動時同期の切り替えを行いません"));
-    }
-
-    // F9: 処理の途中で取り消されたら、その時点のイベントまでで止まる。
-    // StateChanged は SwitchFor の前に発火するので、ハンドラから取り消すと
-    // 「1件目は切り替わり、2件目は切り替わらない」という境界を固定できる
-    [Fact]
-    public void Tick_CancelledBetweenEvents_StopsAfterCurrentEvent()
-    {
-        File.WriteAllText(_path, string.Empty);
-        var engine = CreateEngine();
-        engine.StartupSync();
-        using var cancellation = new CancellationTokenSource();
-        engine.StateChanged += (_, _) => cancellation.Cancel();
-
-        File.WriteAllText(_path, Text([
-            EventLine("L1", EpochMs(NowUtc), ConnectDevice),
-            EventLine("L2", EpochMs(NowUtc), DisconnectDevice),
-        ]));
-        engine.Tick(cancellation.Token);
-
-        Assert.Equal(["BUDS"], _switcher.Calls);
-        Assert.Equal(HeadsetState.Connected, engine.State);
-        Assert.Contains(_logger.Entries, e => e.Message.Contains("残りのイベントの処理を中止"));
-    }
-
-    // 取り消されていなければ、1回の読み取りのイベントをすべて処理する
-    [Fact]
-    public void Tick_NotCancelled_ProcessesEveryEvent()
-    {
-        File.WriteAllText(_path, string.Empty);
-        var engine = CreateEngine();
-        engine.StartupSync();
-        using var cancellation = new CancellationTokenSource();
-
-        File.WriteAllText(_path, Text([
-            EventLine("L1", EpochMs(NowUtc), ConnectDevice),
-            EventLine("L2", EpochMs(NowUtc), DisconnectDevice),
-        ]));
-        engine.Tick(cancellation.Token);
-
-        Assert.Equal(["BUDS", "SPEAKER"], _switcher.Calls);
-    }
-
     // ---- 録音の切り替え（Issue rurute/inzone-auto-switch#8） ----
 
     private void UseCaptureTargets() =>
         _settings = _settings with { BudsInputDevice = "BUDS_MIC", SpeakerInputDevice = "SPEAKER_MIC" };
-
-    // 空のログで監視を始め、1件ずつイベントを追記して tick する
-    private AutoSwitchEngine StartedEngine()
-    {
-        WriteLines();
-        var engine = CreateEngine();
-        engine.Tick();
-        return engine;
-    }
 
     [Fact]
     public void Tick_ConnectThenDisconnect_SwitchesPlaybackThenCaptureInEachDirection()
     {
         UseCaptureTargets();
         var engine = StartedEngine();
+        Results(Connected, Disconnected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
         engine.Tick();
 
         Assert.Equal(
@@ -876,10 +692,9 @@ public sealed class AutoSwitchEngineTests : IDisposable
     public void Tick_CaptureTargetsUnset_SwitchesPlaybackOnly()
     {
         var engine = StartedEngine();
+        Results(Connected, Disconnected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
         engine.Tick();
 
         Assert.Equal([(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Playback, "SPEAKER")], _switcher.FlowCalls);
@@ -893,10 +708,9 @@ public sealed class AutoSwitchEngineTests : IDisposable
     {
         _settings = _settings with { BudsInputDevice = budsInput, SpeakerInputDevice = speakerInput };
         var engine = StartedEngine();
+        Results(Connected, Disconnected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
         engine.Tick();
 
         Assert.Equal(
@@ -910,8 +724,8 @@ public sealed class AutoSwitchEngineTests : IDisposable
         UseCaptureTargets();
         _settings = _settings with { SwitchOnConnect = false };
         var engine = StartedEngine();
+        Results(Connected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
 
         Assert.Empty(_switcher.FlowCalls);
@@ -924,10 +738,9 @@ public sealed class AutoSwitchEngineTests : IDisposable
         UseCaptureTargets();
         _settings = _settings with { SwitchOnDisconnect = false };
         var engine = StartedEngine();
+        Results(Connected, Disconnected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
         engine.Tick();
 
         Assert.Equal([(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Capture, "BUDS_MIC")], _switcher.FlowCalls);
@@ -945,8 +758,8 @@ public sealed class AutoSwitchEngineTests : IDisposable
         _switcher.Result = playbackResult;
         _switcher.CaptureResult = SwitchResult.Switched;
         var engine = StartedEngine();
+        Results(Connected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
 
         Assert.Equal([(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Capture, "BUDS_MIC")], _switcher.FlowCalls);
@@ -965,8 +778,8 @@ public sealed class AutoSwitchEngineTests : IDisposable
         UseCaptureTargets();
         _switcher.CaptureResult = captureResult;
         var engine = StartedEngine();
+        Results(Connected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
 
         Assert.Contains((expectedLevel, $"Capture {captureResult}: BUDS_MIC"), _logger.Entries);
@@ -977,10 +790,10 @@ public sealed class AutoSwitchEngineTests : IDisposable
     public void Tick_SwitcherThrowsOnPlayback_PropagatesWithoutCapture()
     {
         UseCaptureTargets();
-        _switcher.Exception = new InvalidOperationException("simulated switcher failure");
         var engine = StartedEngine();
+        _switcher.Exception = new InvalidOperationException("simulated switcher failure");
+        Results(Connected);
 
-        AppendLines(EventLine("x1", 1000, ConnectDevice));
         var ex = Assert.Throws<InvalidOperationException>(engine.Tick);
 
         Assert.Equal("simulated switcher failure", ex.Message);
@@ -988,10 +801,10 @@ public sealed class AutoSwitchEngineTests : IDisposable
     }
 
     [Fact]
-    public void StartupSync_RecentConnectEvent_SwitchesPlaybackThenCapture()
+    public void StartupSync_Connected_SwitchesPlaybackThenCapture()
     {
         UseCaptureTargets();
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
+        Results(Connected);
         var engine = CreateEngine();
 
         engine.StartupSync();
@@ -1004,10 +817,9 @@ public sealed class AutoSwitchEngineTests : IDisposable
     {
         UseCaptureTargets();
         var engine = StartedEngine();
+        Results(Connected, Connected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
-        AppendLines(EventLine("c2", 2000, ConnectDevice));
         engine.Tick();
 
         Assert.Equal([(DeviceFlow.Playback, "BUDS"), (DeviceFlow.Capture, "BUDS_MIC")], _switcher.FlowCalls);
@@ -1027,8 +839,8 @@ public sealed class AutoSwitchEngineTests : IDisposable
                 cancellation.Cancel();
             }
         };
+        Results(Connected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick(cancellation.Token);
 
         Assert.Equal([(DeviceFlow.Playback, "BUDS")], _switcher.FlowCalls);
@@ -1039,7 +851,7 @@ public sealed class AutoSwitchEngineTests : IDisposable
     public void StartupSync_CancelledDuringPlaybackSwitch_SkipsCapture()
     {
         UseCaptureTargets();
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
+        Results(Connected);
         var engine = CreateEngine();
         using var cancellation = new CancellationTokenSource();
         _switcher.OnSwitch = (flow, _) =>
@@ -1063,8 +875,8 @@ public sealed class AutoSwitchEngineTests : IDisposable
         var engine = StartedEngine();
         using var cancellation = new CancellationTokenSource();
         _switcher.OnSwitch = (_, _) => cancellation.Cancel();
+        Results(Connected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick(cancellation.Token);
 
         Assert.Equal([(DeviceFlow.Playback, "BUDS")], _switcher.FlowCalls);
@@ -1094,13 +906,12 @@ public sealed class AutoSwitchEngineTests : IDisposable
     {
         UseCaptureTargets();
         var engine = StartedEngine();
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        Results(Connected);
         engine.Tick();
 
         engine.Settings.Replace(NewTargets(engine.Settings.Current));
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        Results(Disconnected, Connected);
         engine.Tick();
-        AppendLines(EventLine("c2", 3000, ConnectDevice));
         engine.Tick();
 
         Assert.Equal(
@@ -1122,10 +933,10 @@ public sealed class AutoSwitchEngineTests : IDisposable
         var engine = StartedEngine();
 
         engine.Settings.Replace(engine.Settings.Current with { SwitchOnConnect = false });
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        Results(Connected);
         engine.Tick();
         engine.Settings.Replace(engine.Settings.Current with { SwitchOnConnect = true, SwitchOnDisconnect = false });
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
+        Results(Disconnected);
         engine.Tick();
 
         Assert.Empty(_switcher.FlowCalls);
@@ -1138,7 +949,7 @@ public sealed class AutoSwitchEngineTests : IDisposable
     {
         UseCaptureTargets();
         var engine = StartedEngine();
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        Results(Connected);
         engine.Tick();
         var callsBefore = _switcher.FlowCalls.Count;
 
@@ -1149,27 +960,6 @@ public sealed class AutoSwitchEngineTests : IDisposable
         Assert.Equal(HeadsetState.Connected, engine.State);
     }
 
-    // 入れ替えても既読の logId は残る。既に処理したイベントを再び読んでも切り替えない（spec §6「守ること」）
-    [Fact]
-    public void Replace_KeepsSeenLogIds()
-    {
-        UseCaptureTargets();
-        var engine = StartedEngine();
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
-        engine.Tick();
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
-        engine.Tick();
-        var callsBefore = _switcher.FlowCalls.Count;
-
-        engine.Settings.Replace(NewTargets(engine.Settings.Current));
-        // 短く書き直して truncate として先頭から読み直させ、既読の接続イベントだけを再び読ませる
-        WriteLines(EventLine("c1", 1000, ConnectDevice));
-        engine.Tick();
-
-        Assert.Equal(callsBefore, _switcher.FlowCalls.Count);
-        Assert.Equal(HeadsetState.Disconnected, engine.State);
-    }
-
     // 6項目以外は起動時の値を使い続ける（spec §6）
     [Fact]
     public void Tick_AfterReplace_KeepsStartupPollInterval()
@@ -1177,10 +967,15 @@ public sealed class AutoSwitchEngineTests : IDisposable
         var engine = StartedEngine();
 
         engine.Settings.Replace(engine.Settings.Current with { PollIntervalSeconds = 30, IdlePollIntervalSeconds = 60 });
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
+        Results(Connected);
         engine.Tick();
 
-        Assert.Equal(_settings.PollIntervalSeconds, engine.NextDelaySeconds);
+        Assert.Equal(PollSeconds, engine.NextDelaySeconds);
+
+        Results(Unavailable);
+        engine.Tick();
+
+        Assert.Equal(IdleSeconds, engine.NextDelaySeconds);
     }
 
     // 1回の切り替えは始めたときの設定で最後まで行う（spec §6）
@@ -1198,10 +993,9 @@ public sealed class AutoSwitchEngineTests : IDisposable
                 engine.Settings.Replace(NewTargets(engine.Settings.Current));
             }
         };
+        Results(Connected, Disconnected);
 
-        AppendLines(EventLine("c1", 1000, ConnectDevice));
         engine.Tick();
-        AppendLines(EventLine("d1", 2000, DisconnectDevice));
         engine.Tick();
 
         Assert.Equal(
@@ -1218,7 +1012,7 @@ public sealed class AutoSwitchEngineTests : IDisposable
     public void StartupSync_ReplacedDuringPlaybackSwitch_FinishesWithSnapshotThenUsesNewSettings()
     {
         UseCaptureTargets();
-        WriteLines(EventLine("e1", EpochMs(NowUtc.AddMinutes(-2)), ConnectDevice));
+        Results(Connected, Disconnected);
         var engine = CreateEngine();
         var replaced = false;
         _switcher.OnSwitch = (flow, _) =>
@@ -1231,7 +1025,6 @@ public sealed class AutoSwitchEngineTests : IDisposable
         };
 
         engine.StartupSync();
-        AppendLines(EventLine("d1", EpochMs(NowUtc), DisconnectDevice));
         engine.Tick();
 
         Assert.Equal(

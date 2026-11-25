@@ -13,7 +13,7 @@ public sealed record SettingsLoadResult(AppSettings Settings, IReadOnlyList<stri
 public static class SettingsLoader
 {
     /// <summary>
-    /// 項目ごとに検証し、不正な項目だけ既定値へ戻して警告を残す。例外を外へ出さない。ActionLogPath の環境変数を展開する。
+    /// 項目ごとに検証し、不正な項目だけ既定値へ戻して警告を残す。例外を外へ出さない。
     /// </summary>
     public static SettingsLoadResult Load(string path)
     {
@@ -66,7 +66,6 @@ public static class SettingsLoader
             values.SpeakerDevice,
             values.SwitchOnConnect,
             values.SwitchOnDisconnect,
-            Environment.ExpandEnvironmentVariables(values.ActionLogPath),
             values.PollIntervalSeconds,
             values.IdlePollIntervalSeconds,
             values.StartupSyncMaxAgeMinutes,
@@ -78,7 +77,7 @@ public static class SettingsLoader
     }
 
     /// <summary>
-    /// ファイルが無ければ、旧版 config.json と同じキー順・値で BOM 付き UTF-8 の既定ファイルを作る。
+    /// ファイルが無ければ、旧版 config.json のキー順から actionLogPath を抜き、AppSettings.Default の値で BOM 付き UTF-8 の既定ファイルを作る。
     /// 作成したら true。既存は上書きしない。失敗は例外。
     /// </summary>
     public static bool CreateDefaultFileIfMissing(string path)
@@ -113,7 +112,6 @@ public static class SettingsLoader
             writer.WriteString("speakerDevice", d.SpeakerDevice);
             writer.WriteBoolean("switchOnConnect", d.SwitchOnConnect);
             writer.WriteBoolean("switchOnDisconnect", d.SwitchOnDisconnect);
-            writer.WriteString("actionLogPath", d.ActionLogPath);
             writer.WriteNumber("pollIntervalSeconds", d.PollIntervalSeconds);
             writer.WriteNumber("idlePollIntervalSeconds", d.IdlePollIntervalSeconds);
             writer.WriteNumber("startupSyncMaxAgeMinutes", d.StartupSyncMaxAgeMinutes);
@@ -165,7 +163,7 @@ public static class SettingsLoader
             }
             else if (Is(key, "actionLogPath"))
             {
-                values.ActionLogPath = ReadString(key, value, values.ActionLogPath, warnings);
+                // 使わなくなった項目（Issue rurute/inzone-auto-switch#23）。作者の既存の config.json にあるため、検証も警告もせずに無視する
             }
             else if (Is(key, "pollIntervalSeconds"))
             {
@@ -281,7 +279,6 @@ public static class SettingsLoader
         public string SpeakerDevice { get; set; } = AppSettings.Default.SpeakerDevice;
         public bool SwitchOnConnect { get; set; } = AppSettings.Default.SwitchOnConnect;
         public bool SwitchOnDisconnect { get; set; } = AppSettings.Default.SwitchOnDisconnect;
-        public string ActionLogPath { get; set; } = AppSettings.Default.ActionLogPath;
         public int PollIntervalSeconds { get; set; } = AppSettings.Default.PollIntervalSeconds;
         public int IdlePollIntervalSeconds { get; set; } = AppSettings.Default.IdlePollIntervalSeconds;
         public int StartupSyncMaxAgeMinutes { get; set; } = AppSettings.Default.StartupSyncMaxAgeMinutes;

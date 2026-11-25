@@ -96,17 +96,28 @@ public sealed class FakeClock : IClock
     public DateTime UtcNow { get; set; }
 }
 
-// INZONE Hub のプロセス検出の代わり。null は Hub が起動していないことを表す
-public sealed class FakeHubProcessProbe : IHubProcessProbe
+// ドングルへの問い合わせの代わり。Results を呼ばれた順に返し、空なら最後に返した結果を繰り返す。
+// 一度も結果を設定していないのに呼ばれたら InvalidOperationException（テストの設定漏れを見逃さないため）
+public sealed class FakeBudsProbe : IBudsProbe
 {
-    public DateTime? StartTimeUtc { get; set; }
+    private ProbeResult? _last;
+
+    public Queue<ProbeResult> Results { get; } = new();
+
+    /// <summary>結果を返す前に、渡されたトークンを受け取って呼ばれる。テストが問い合わせの途中で取り消すのに使う</summary>
+    public Action<CancellationToken>? OnQuery { get; set; }
 
     public int CallCount { get; private set; }
 
-    public DateTime? GetStartTimeUtc()
+    public ProbeResult Query(CancellationToken token)
     {
         CallCount++;
-        return StartTimeUtc;
+        OnQuery?.Invoke(token);
+        if (Results.Count > 0)
+        {
+            _last = Results.Dequeue();
+        }
+        return _last ?? throw new InvalidOperationException("FakeBudsProbe に結果が設定されていません");
     }
 }
 
@@ -256,4 +267,80 @@ public sealed class CountingClock : IClock
             return DateTime.UtcNow;
         }
     }
+}
+
+// ドングルとの通信の代わり。開く・書く・読むの結果を設定でき、書いたバイト列・閉じた回数・待った時間を記録する。
+// Write のたびに Replies から 1 つ取り出し、書いた問い合わせを渡して、その後に届くフレーム列を決める（null は何も届かない）。
+// WaitForFrame は届くフレームを順に FrameReceived へ渡しながら match にかけ、満たしたものを返す。満たさなければ null（時間切れ）
+public sealed class FakeBudsTransport : IBudsTransport
+{
+    private byte[][]? _pending;
+
+    /// <summary>TryOpen の結果を呼ばれた順に返す。空なら true</summary>
+    public Queue<bool> OpenResults { get; } = new();
+
+    /// <summary>TryOpen が false を返すときの理由</summary>
+    public string OpenError { get; set; } = "";
+
+    public Exception? WriteException { get; set; }
+
+    /// <summary>書いた問い合わせを受け取り、その後に届くフレーム列を返す。null は時間切れ。空なら何も届かない</summary>
+    public Queue<Func<byte[], byte[][]?>> Replies { get; } = new();
+
+    public Exception? ReadException { get; set; }
+
+    /// <summary>Write に渡されたバイト列（呼ばれた順）。例外を投げる設定でも記録する</summary>
+    public List<byte[]> Writes { get; } = new();
+
+    public int CloseCount { get; private set; }
+
+    public int DisposeCount { get; private set; }
+
+    /// <summary>WaitForFrame に渡された timeout（呼ばれた順）</summary>
+    public List<TimeSpan> Timeouts { get; } = new();
+
+    public event Action<byte[]>? FrameReceived;
+
+    public bool TryOpen(out string error)
+    {
+        var opened = OpenResults.Count == 0 || OpenResults.Dequeue();
+        error = opened ? "" : OpenError;
+        return opened;
+    }
+
+    public void Write(byte[] report)
+    {
+        Writes.Add(report.ToArray());
+        if (WriteException is not null)
+        {
+            throw WriteException;
+        }
+        _pending = Replies.Count > 0 ? Replies.Dequeue()(report) : null;
+    }
+
+    public byte[]? WaitForFrame(Func<byte[], bool> match, TimeSpan timeout, CancellationToken token)
+    {
+        Timeouts.Add(timeout);
+        token.ThrowIfCancellationRequested();
+        if (ReadException is not null)
+        {
+            throw ReadException;
+        }
+
+        var frames = _pending ?? [];
+        _pending = null;
+        foreach (var frame in frames)
+        {
+            FrameReceived?.Invoke(frame);
+            if (match(frame))
+            {
+                return frame;
+            }
+        }
+        return null;
+    }
+
+    public void Close() => CloseCount++;
+
+    public void Dispose() => DisposeCount++;
 }

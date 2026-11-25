@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace AutoSwitch.Core;
 
 public interface IClock
@@ -12,89 +10,51 @@ public sealed class SystemClock : IClock
     public DateTime UtcNow => DateTime.UtcNow;
 }
 
-public interface IHubProcessProbe
-{
-    /// <summary>INZONEHub の最も早い起動時刻（UTC）。無い・取得に失敗した場合は null</summary>
-    DateTime? GetStartTimeUtc();
-}
-
-public sealed class SystemHubProcessProbe : IHubProcessProbe
-{
-    private const string HubProcessName = "INZONEHub";
-
-    public DateTime? GetStartTimeUtc()
-    {
-        Process[] processes = [];
-        try
-        {
-            processes = Process.GetProcessesByName(HubProcessName);
-            if (processes.Length == 0)
-            {
-                return null;
-            }
-
-            // 起動時刻を読めないプロセスがあれば、取得の失敗として null にする
-            return processes.Min(p => p.StartTime).ToUniversalTime();
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-        finally
-        {
-            foreach (var process in processes)
-            {
-                process.Dispose();
-            }
-        }
-    }
-}
-
 /// <summary>
-/// 起動時同期と監視 tick。規則とログの文言は旧版 Orchestrator.psm1 に合わせる。
-/// 切り替えの例外は外へ出す（監視ループが記録する）。
+/// 起動時の合わせ直しと監視 tick。INZONE Buds のドングルへの問い合わせ（IBudsProbe）で状態を判定する（Issue rurute/inzone-auto-switch#23）。
+/// 起動時と、読めない状態から戻ったときは、前の状態と同じでも今の状態に合わせて 1 回切り替える
+/// （startupSyncMaxAgeMinutes が 0 なら判定だけ）。それ以外は状態が変わったときだけ切り替える。
+/// 読めないときは状態を変えず、idle 間隔で探し直す。ログは読めなくなったとき・戻ったときに 1 回ずつ。
+/// 切り替えの例外と、問い合わせの取り消しの例外は外へ出す（監視ループが扱う）。
 /// 切り替えの6項目（SwitchSettings）は Settings から切り替えのたびに読み、ほかの項目は起動時の値を使い続ける（Issue rurute/inzone-auto-switch#9）。
 /// </summary>
 public sealed class AutoSwitchEngine
 {
-    private const int SeenLogIdCapacity = 200;
-    private const int MaxBackoffSeconds = 60;
     private const int ResumeGapSeconds = 300;
-
-    // DateTimeOffset.FromUnixTimeMilliseconds が受け付ける範囲（0001-01-01Z 〜 9999-12-31T23:59:59.999Z）
-    private const long MinUnixMilliseconds = -62135596800000L;
-    private const long MaxUnixMilliseconds = 253402300799999L;
 
     private readonly AppSettings _settings;
     private readonly IAppLogger _logger;
     private readonly IAudioSwitcher _switcher;
     private readonly IClock _clock;
-    private readonly IHubProcessProbe _hub;
-    private readonly ActionLogReader _reader;
-    private readonly SeenLogIdSet _seenLogIds = new(SeenLogIdCapacity);
+    private readonly IBudsProbe _probe;
     private DateTime? _lastTickUtc;
 
-    public AutoSwitchEngine(AppSettings settings, IAppLogger logger, IAudioSwitcher switcher, IClock clock, IHubProcessProbe hub)
+    // 次の判定を合わせ直し（同じ状態でも 1 回切り替える）にする。起動時と、読めない状態のあとに立つ
+    private bool _resyncPending = true;
+
+    // 読めない状態のログを書いた（戻るまで同じ Warn を繰り返さない）
+    private bool _unavailable;
+
+    public AutoSwitchEngine(AppSettings settings, IAppLogger logger, IAudioSwitcher switcher, IClock clock, IBudsProbe probe)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(switcher);
         ArgumentNullException.ThrowIfNull(clock);
-        ArgumentNullException.ThrowIfNull(hub);
+        ArgumentNullException.ThrowIfNull(probe);
 
         _settings = settings;
         _logger = logger;
         _switcher = switcher;
         _clock = clock;
-        _hub = hub;
-        _reader = new ActionLogReader(settings.ActionLogPath);
+        _probe = probe;
         NextDelaySeconds = settings.PollIntervalSeconds;
         Settings = new LiveSettings(settings);
     }
 
     /// <summary>
     /// 動作中の設定。入れ替えると、次に始まる切り替えから6項目の新しい値を使う。
-    /// ポーリング間隔や起動時同期の条件など、6項目以外はコンストラクタで受け取った値を使い続ける
+    /// ポーリング間隔や起動時の切り替えの有無など、6項目以外はコンストラクタで受け取った値を使い続ける
     /// </summary>
     public LiveSettings Settings { get; }
 
@@ -102,6 +62,12 @@ public sealed class AutoSwitchEngine
 
     /// <summary>状態が実際に変わったときだけ発火する。監視スレッドから呼ばれる</summary>
     public event EventHandler<HeadsetState>? StateChanged;
+
+    /// <summary>ドングルへの問い合わせを始める直前に、監視スレッドから発火する</summary>
+    public event Action? QueryStarting;
+
+    /// <summary>問い合わせを終えるたびに（取り消しの例外で終わったときを除く）、監視スレッドから発火する</summary>
+    public event Action<ProbeStatus>? QueryCompleted;
 
     private void SetState(HeadsetState newState)
     {
@@ -123,95 +89,14 @@ public sealed class AutoSwitchEngine
         }
     }
 
-    public int ConsecutiveErrors { get; private set; }
-
     public int NextDelaySeconds { get; private set; }
 
     public void StartupSync() => StartupSync(CancellationToken.None);
 
     public void StartupSync(CancellationToken token)
     {
-        var read = _reader.Read();
         _lastTickUtc = _clock.UtcNow;
-
-        if (read.Status == ReadStatus.FileMissing)
-        {
-            _logger.Write(LogLevel.Info, "ActionLog.log がまだありません。INZONE Hub の起動を待機します。");
-            NextDelaySeconds = _settings.IdlePollIntervalSeconds;
-            return;
-        }
-
-        if (read.Status == ReadStatus.Error)
-        {
-            _logger.Write(LogLevel.Warn, $"起動時同期: ActionLog.log を読めません: {read.Message}");
-            NextDelaySeconds = _settings.IdlePollIntervalSeconds;
-            return;
-        }
-
-        if (read.Status == ReadStatus.Skipped)
-        {
-            _logger.Write(LogLevel.Warn, $"ActionLog.log の完結しない行が上限に達したため読み飛ばしました: {read.Message}");
-        }
-
-        // 採用可否にかかわらず、読んだ行はすべて既読として登録する。
-        // これをしないと次の tick で過去のイベントが「新規」として再発火する
-        var events = HubEventParser.Parse(read.Lines, _seenLogIds);
-        NextDelaySeconds = _settings.PollIntervalSeconds;
-
-        if (_settings.StartupSyncMaxAgeMinutes <= 0)
-        {
-            _logger.Write(LogLevel.Info, "起動時同期は無効です。既存のログは読み飛ばしました。");
-            return;
-        }
-
-        if (events.Count == 0)
-        {
-            _logger.Write(LogLevel.Info, "起動時同期: 判定できるイベントがありません。切り替えません。");
-            return;
-        }
-
-        var hubStartUtc = _hub.GetStartTimeUtc();
-        if (hubStartUtc is null)
-        {
-            _logger.Write(LogLevel.Info, "起動時同期: INZONE Hub が起動していません。切り替えません。");
-            return;
-        }
-
-        var lastEvent = events[^1];
-        if (lastEvent.TimeStampMs < MinUnixMilliseconds || lastEvent.TimeStampMs > MaxUnixMilliseconds)
-        {
-            // 旧版は変換の例外でそのまま落ちる。常駐を止めないため、ここで弾いて切り替えないだけにする（S2）
-            _logger.Write(LogLevel.Warn, $"起動時同期: 最終イベントの時刻が範囲外です（{lastEvent.TimeStampMs}）。切り替えません。");
-            return;
-        }
-
-        // ここへ来る timeStamp は上で範囲を確認済み（旧版の ConvertFrom-EpochMilliseconds は範囲外で例外になる）
-        var eventUtc = DateTimeOffset.FromUnixTimeMilliseconds(lastEvent.TimeStampMs).UtcDateTime;
-        var nowUtc = _clock.UtcNow;
-
-        if (eventUtc < hubStartUtc.Value)
-        {
-            _logger.Write(LogLevel.Info, "起動時同期: 最終イベントが INZONE Hub の起動より前です。切り替えません。");
-            return;
-        }
-
-        var ageMinutes = (nowUtc - eventUtc).TotalMinutes;
-        if (ageMinutes > _settings.StartupSyncMaxAgeMinutes)
-        {
-            // 旧版の '{0:N1}' -f と同じく現在のカルチャで書式化する
-            _logger.Write(LogLevel.Info, $"起動時同期: 最終イベントが古すぎます（{ageMinutes:N1} 分前）。切り替えません。");
-            return;
-        }
-
-        if (token.IsCancellationRequested)
-        {
-            _logger.Write(LogLevel.Info, "終了が要求されたため、起動時同期の切り替えを行いません。");
-            return;
-        }
-
-        SetState(lastEvent.State);
-        _logger.Write(LogLevel.Info, $"起動時同期: 現在の状態を {lastEvent.State} と判定しました。");
-        SwitchFor(lastEvent.State, token);
+        Evaluate(token);
     }
 
     public void Tick() => Tick(CancellationToken.None);
@@ -222,67 +107,105 @@ public sealed class AutoSwitchEngine
         if (_lastTickUtc is not null && (nowUtc - _lastTickUtc.Value).TotalSeconds > ResumeGapSeconds)
         {
             _logger.Write(LogLevel.Info, "長時間のギャップを検知しました（スリープ復帰とみなします）。監視を通常間隔へ戻します。");
-            ConsecutiveErrors = 0;
         }
         _lastTickUtc = nowUtc;
 
-        var read = _reader.Read();
+        Evaluate(token);
+    }
 
-        if (read.Status == ReadStatus.FileMissing)
+    // 起動時と Tick に共通の手順: 問い合わせて、読めなければ待つ間隔だけを変え、読めれば合わせ直すか変化を見る
+    private void Evaluate(CancellationToken token)
+    {
+        var result = Query(token);
+
+        if (result.Status == ProbeStatus.Unavailable)
         {
-            _logger.Write(LogLevel.Debug, "ActionLog.log がありません。待機します。");
-            ConsecutiveErrors = 0;
+            if (!_unavailable)
+            {
+                _logger.Write(LogLevel.Warn, $"INZONE Buds のドングルを読めません。{_settings.IdlePollIntervalSeconds} 秒おきに探し直します: {result.Error}");
+                _unavailable = true;
+            }
+
+            // 抜いている間に Windows が既定のデバイスを替えるので、戻ったら差ではなく今の状態に合わせる
+            _resyncPending = true;
             NextDelaySeconds = _settings.IdlePollIntervalSeconds;
             return;
         }
 
-        if (read.Status == ReadStatus.Error)
+        NextDelaySeconds = _settings.PollIntervalSeconds;
+        if (_unavailable)
         {
-            ConsecutiveErrors++;
-            var delay = (double)_settings.PollIntervalSeconds * Math.Pow(2, ConsecutiveErrors - 1);
-            NextDelaySeconds = (int)Math.Min(delay, MaxBackoffSeconds);
-            _logger.Write(LogLevel.Warn, $"ActionLog.log の読み取りに失敗しました: {read.Message}");
+            _logger.Write(LogLevel.Info, "INZONE Buds のドングルを読めるようになりました。");
+            _unavailable = false;
+        }
+
+        var observed = result.Status == ProbeStatus.Connected ? HeadsetState.Connected : HeadsetState.Disconnected;
+
+        if (_resyncPending)
+        {
+            _resyncPending = false;
+            if (token.IsCancellationRequested)
+            {
+                _logger.Write(LogLevel.Info, "終了が要求されたため、切り替えを行いません。");
+                return;
+            }
+
+            SetState(observed);
+            if (_settings.StartupSyncMaxAgeMinutes <= 0)
+            {
+                _logger.Write(LogLevel.Info, $"現在の状態を {observed} と判定しました。startupSyncMaxAgeMinutes が 0 のため切り替えません。");
+                return;
+            }
+
+            _logger.Write(LogLevel.Info, $"現在の状態を {observed} と判定しました。");
+            SwitchFor(observed, token);
             return;
         }
 
-        if (read.Status == ReadStatus.Truncated)
+        if (token.IsCancellationRequested)
         {
-            _logger.Write(LogLevel.Info, "ActionLog.log の truncate を検知しました。先頭から読み直します。");
-        }
-        else if (read.Status == ReadStatus.Recreated)
-        {
-            _logger.Write(LogLevel.Info, "ActionLog.log の再生成を検知しました。先頭から読み直します。");
-        }
-        else if (read.Status == ReadStatus.Skipped)
-        {
-            _logger.Write(LogLevel.Warn, $"ActionLog.log の完結しない行が上限に達したため読み飛ばしました: {read.Message}");
+            _logger.Write(LogLevel.Info, "終了が要求されたため、切り替えを行いません。");
+            return;
         }
 
-        ConsecutiveErrors = 0;
-        NextDelaySeconds = _settings.PollIntervalSeconds;
-
-        // 追記順がそのまま時系列順なので並べ替えない
-        foreach (var hubEvent in HubEventParser.Parse(read.Lines, _seenLogIds))
+        var (changed, newState) = StateTransition.Resolve(State, observed);
+        if (!changed)
         {
-            // 終了が要求されたら残りは処理しない。1回の読み取りは最大 4 MiB 分の
-            // イベントを含みうるので、ここで止めないと終了後も切り替えが続く
-            if (token.IsCancellationRequested)
-            {
-                _logger.Write(LogLevel.Info, "終了が要求されたため、残りのイベントの処理を中止します。");
-                break;
-            }
-
-            var (changed, newState) = StateTransition.Resolve(State, hubEvent.State);
-            if (!changed)
-            {
-                _logger.Write(LogLevel.Debug, $"状態は {hubEvent.State} のままです。切り替えません。");
-                continue;
-            }
-
-            SetState(newState);
-            _logger.Write(LogLevel.Info, $"状態遷移を検知しました: {newState}");
-            SwitchFor(newState, token);
+            _logger.Write(LogLevel.Debug, $"状態は {observed} のままです。切り替えません。");
+            return;
         }
+
+        SetState(newState);
+        _logger.Write(LogLevel.Info, $"状態遷移を検知しました: {newState}");
+        SwitchFor(newState, token);
+    }
+
+    // 問い合わせの前後でイベントを発火する。取り消しの例外は QueryCompleted を発火せずにそのまま外へ出す
+    private ProbeResult Query(CancellationToken token)
+    {
+        try
+        {
+            QueryStarting?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            // 知らせの扱いの失敗で監視と切り替えを止めない
+            _logger.Write(LogLevel.Error, $"問い合わせ開始の通知で予期しない例外が発生しました: {ex.Message}");
+        }
+
+        var result = _probe.Query(token);
+        _logger.Write(LogLevel.Debug, $"ドングルの問い合わせ: {result.Status}");
+
+        try
+        {
+            QueryCompleted?.Invoke(result.Status);
+        }
+        catch (Exception ex)
+        {
+            _logger.Write(LogLevel.Error, $"問い合わせ完了の通知で予期しない例外が発生しました: {ex.Message}");
+        }
+
+        return result;
     }
 
     private void SwitchFor(HeadsetState state, CancellationToken token)

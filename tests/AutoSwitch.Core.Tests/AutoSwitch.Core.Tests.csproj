@@ -20,10 +20,4 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\AutoSwitch.Core\AutoSwitch.Core.csproj" />
   </ItemGroup>
-  <ItemGroup>
-    <!-- 旧版テストと同じ fixture を移動せずに参照する -->
-    <None Include="..\fixtures\actionlog-sample.log" Link="fixtures\actionlog-sample.log" CopyToOutputDirectory="PreserveNewest" />
-    <!-- 旧版の「リポジトリの config.json」の検査を引き継ぐため、移動せずに参照する -->
-    <None Include="..\..\config.json" Link="repo\config.json" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
 </Project>

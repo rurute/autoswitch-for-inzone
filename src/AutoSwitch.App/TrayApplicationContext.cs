@@ -36,7 +36,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         AppSettings settings,
         IAppLogger logger,
         TrayIcons icons,
-        AutoStartRegistration autoStart)
+        AutoStartRegistration autoStart,
+        IBudsTransport transport)
     {
         _engine = engine;
         _logger = logger;
@@ -51,8 +52,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _ = _marshaller.Handle;
 
             _menu.Items.Add("設定(&S)...", null, (_, _) => OpenSettings());
-            _menu.Items.Add("設定ファイルを開く(&C)", null, (_, _) => Open(AppPaths.ConfigPath));
-            _menu.Items.Add("ログフォルダを開く(&L)", null, (_, _) => Open(AppPaths.LogFolder));
+            _menu.Items.Add("設定ファイルを開く(&C)", null, (_, _) => Open(AppPaths.ConfigPath, "設定ファイル"));
+            _menu.Items.Add("ログフォルダを開く(&L)", null, (_, _) => Open(AppPaths.LogFolder, "ログフォルダ"));
 
             // ToolStripMenuItem はこの時点では OS の資源を作らないので、途中で失敗しても取り残しは生じない
             _autoStartItem = new ToolStripMenuItem(AutoStartMenuText, null, (_, _) => ToggleAutoStart())
@@ -76,7 +77,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             _engine.StateChanged += OnStateChanged;
 
-            _runner = new MonitorRunner(engine, settings, logger);
+            _runner = new MonitorRunner(engine, settings, logger, transport);
             _runner.Start();
         }
         catch
@@ -171,7 +172,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             if (enable)
             {
                 _autoStart.Enable();
-                _logger.Write(LogLevel.Info, $"自動起動を有効にしました: {_autoStart.CommandLine}");
+                _logger.Write(LogLevel.Info, "自動起動を有効にしました。");
             }
             else
             {
@@ -271,7 +272,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         return null;
     }
 
-    private void Open(string path)
+    // ログにはパスを書かず、項目の名前（設定ファイル・ログフォルダ）で書く。ダイアログにはパスを出す
+    private void Open(string path, string itemName)
     {
         try
         {
@@ -279,7 +281,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception ex)
         {
-            _logger.Write(LogLevel.Warn, $"開けません: {path}: {ex.Message}");
+            _logger.Write(LogLevel.Warn, $"{itemName}を開けません: {AppPaths.ForLog(ex.Message)}");
             MessageBox.Show(
                 $"開けません。{Environment.NewLine}{Environment.NewLine}{path}{Environment.NewLine}{Environment.NewLine}{ex.Message}",
                 "AutoSwitch for INZONE",

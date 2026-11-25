@@ -28,11 +28,6 @@ public sealed class SettingsLoaderTests : IDisposable
         }
     }
 
-    private static string ExpandedDefaultActionLogPath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Sony\INZONE Hub\ActionLog.log");
-
-    private static AppSettings ExpandedDefault => AppSettings.Default with { ActionLogPath = ExpandedDefaultActionLogPath };
-
     // 旧版テストと同じく BOM 付き UTF-8 で書く
     private string WriteConfig(string content)
     {
@@ -43,8 +38,9 @@ public sealed class SettingsLoaderTests : IDisposable
 
     private SettingsLoadResult LoadContent(string content) => SettingsLoader.Load(WriteConfig(content));
 
+    // pollIntervalSeconds だけ旧版と違う（ドングルへの問い合わせの間隔。spec「設定」で既定 2）
     [Fact]
-    public void Default_MatchesLegacyDefaults()
+    public void Default_HasExpectedValues()
     {
         var d = AppSettings.Default;
 
@@ -52,13 +48,15 @@ public sealed class SettingsLoaderTests : IDisposable
         Assert.Equal("スピーカー (Realtek(R) Audio)", d.SpeakerDevice);
         Assert.True(d.SwitchOnConnect);
         Assert.True(d.SwitchOnDisconnect);
-        Assert.Equal(@"%APPDATA%\Sony\INZONE Hub\ActionLog.log", d.ActionLogPath);
-        Assert.Equal(1, d.PollIntervalSeconds);
+        Assert.Equal(2, d.PollIntervalSeconds);
         Assert.Equal(5, d.IdlePollIntervalSeconds);
         Assert.Equal(10, d.StartupSyncMaxAgeMinutes);
         Assert.Equal(LogLevel.Info, d.LogLevel);
         Assert.Equal(1024, d.MaxLogSizeKB);
     }
+
+    [Fact]
+    public void Default_PollIntervalIs2() => Assert.Equal(2, AppSettings.Default.PollIntervalSeconds);
 
     [Fact]
     public void Load_AllKeys_UsesSpecifiedValuesWithoutWarnings()
@@ -69,8 +67,7 @@ public sealed class SettingsLoaderTests : IDisposable
               "speakerDevice": "Speaker B",
               "switchOnConnect": false,
               "switchOnDisconnect": false,
-              "actionLogPath": "C:\\tmp\\a.log",
-              "pollIntervalSeconds": 2,
+              "pollIntervalSeconds": 3,
               "idlePollIntervalSeconds": 9,
               "startupSyncMaxAgeMinutes": 30,
               "logLevel": "Debug",
@@ -80,7 +77,7 @@ public sealed class SettingsLoaderTests : IDisposable
 
         Assert.Empty(result.Warnings);
         Assert.Equal(
-            new AppSettings("Buds A", "Speaker B", false, false, @"C:\tmp\a.log", 2, 9, 30, LogLevel.Debug, 512),
+            new AppSettings("Buds A", "Speaker B", false, false, 3, 9, 30, LogLevel.Debug, 512),
             result.Settings);
     }
 
@@ -90,7 +87,7 @@ public sealed class SettingsLoaderTests : IDisposable
         var result = LoadContent("""{ "budsDevice": "Only This" }""");
 
         Assert.Empty(result.Warnings);
-        Assert.Equal(ExpandedDefault with { BudsDevice = "Only This" }, result.Settings);
+        Assert.Equal(AppSettings.Default with { BudsDevice = "Only This" }, result.Settings);
     }
 
     [Fact]
@@ -98,7 +95,7 @@ public sealed class SettingsLoaderTests : IDisposable
     {
         var result = LoadContent("""{ "budsDevice": "X", "totallyUnknownKey": 1 }""");
 
-        Assert.Equal(ExpandedDefault with { BudsDevice = "X" }, result.Settings);
+        Assert.Equal(AppSettings.Default with { BudsDevice = "X" }, result.Settings);
         Assert.Equal(["未知の設定キーを無視します: totallyUnknownKey"], result.Warnings);
     }
 
@@ -111,14 +108,52 @@ public sealed class SettingsLoaderTests : IDisposable
         Assert.Equal(5, result.Settings.PollIntervalSeconds);
     }
 
+    // actionLogPath は使わなくなった（spec「設定」）。作者の既存の config.json にあるため、警告を出さずに無視する
     [Fact]
-    public void Load_ActionLogPath_ExpandsEnvironmentVariables()
+    public void Load_ActionLogPath_IgnoredWithoutWarning()
     {
-        var result = LoadContent("""{ "actionLogPath": "%APPDATA%\\Sony\\INZONE Hub\\ActionLog.log" }""");
+        var result = LoadContent("""{ "actionLogPath": "C:\\x.log" }""");
 
         Assert.Empty(result.Warnings);
-        Assert.DoesNotContain("%APPDATA%", result.Settings.ActionLogPath);
-        Assert.Equal(ExpandedDefaultActionLogPath, result.Settings.ActionLogPath);
+        Assert.Equal(AppSettings.Default, result.Settings);
+    }
+
+    // 値の型が文字列でなくても、大文字小文字が違っても、重複していても無視する（使わない項目なので検証しない）
+    [Theory]
+    [InlineData("""{ "actionLogPath": 5 }""")]
+    [InlineData("""{ "actionLogPath": "" }""")]
+    [InlineData("""{ "ACTIONLOGPATH": "C:\\x.log" }""")]
+    [InlineData("""{ "actionLogPath": "a", "actionLogPath": null }""")]
+    public void Load_ActionLogPathAnyValue_IgnoredWithoutWarning(string content)
+    {
+        var result = LoadContent(content);
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(AppSettings.Default, result.Settings);
+    }
+
+    // リポジトリ直下の config.json（旧版のもの。作者の既存の config.json と同じ形）と同じ内容を、警告なしで読み、1 秒のまま動く
+    [Fact]
+    public void Load_ExistingAuthorConfig_NoWarnings()
+    {
+        var result = LoadContent("""
+            {
+              "budsDevice": "スピーカー (INZONE Buds - Game)",
+              "speakerDevice": "スピーカー (Realtek(R) Audio)",
+              "switchOnConnect": true,
+              "switchOnDisconnect": true,
+              "actionLogPath": "%APPDATA%\\Sony\\INZONE Hub\\ActionLog.log",
+              "pollIntervalSeconds": 1,
+              "idlePollIntervalSeconds": 5,
+              "startupSyncMaxAgeMinutes": 10,
+              "logLevel": "Info",
+              "maxLogSizeKB": 1024
+            }
+            """);
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(1, result.Settings.PollIntervalSeconds);
+        Assert.Equal(AppSettings.Default with { PollIntervalSeconds = 1 }, result.Settings);
     }
 
     [Fact]
@@ -126,11 +161,11 @@ public sealed class SettingsLoaderTests : IDisposable
     {
         var result = LoadContent("""{ "pollIntervalSeconds": 0, "maxLogSizeKB": 999999999 }""");
 
-        Assert.Equal(1, result.Settings.PollIntervalSeconds);
+        Assert.Equal(2, result.Settings.PollIntervalSeconds);
         Assert.Equal(1024, result.Settings.MaxLogSizeKB);
         Assert.Equal(
             [
-                "pollIntervalSeconds は 1 〜 60 の範囲で指定してください。既定値 1 を使います。",
+                "pollIntervalSeconds は 1 〜 60 の範囲で指定してください。既定値 2 を使います。",
                 "maxLogSizeKB は 64 〜 102400 の範囲で指定してください。既定値 1024 を使います。",
             ],
             result.Warnings);
@@ -141,11 +176,11 @@ public sealed class SettingsLoaderTests : IDisposable
     {
         var result = LoadContent("""{ "pollIntervalSeconds": "abc", "switchOnConnect": "yes", "budsDevice": "" }""");
 
-        Assert.Equal(ExpandedDefault, result.Settings);
+        Assert.Equal(AppSettings.Default, result.Settings);
         Assert.True(result.Warnings.Count >= 3);
         Assert.Equal(
             [
-                "pollIntervalSeconds は整数で指定してください。既定値 1 を使います。",
+                "pollIntervalSeconds は整数で指定してください。既定値 2 を使います。",
                 "switchOnConnect は true / false で指定してください。既定値 True を使います。",
                 "budsDevice は空でない文字列で指定してください。既定値を使います。",
             ],
@@ -153,9 +188,9 @@ public sealed class SettingsLoaderTests : IDisposable
     }
 
     [Theory]
-    [InlineData("\"2\"", 2)]
-    [InlineData("\" 2 \"", 2)]   // 旧版の [int]::TryParse は前後の空白と符号を許す（実測）
-    [InlineData("\"+2\"", 2)]
+    [InlineData("\"3\"", 3)]
+    [InlineData("\" 3 \"", 3)]   // 旧版の [int]::TryParse は前後の空白と符号を許す（実測）
+    [InlineData("\"+3\"", 3)]
     public void Load_IntegerString_IsAccepted(string json, int expected)
     {
         var result = LoadContent($$"""{ "pollIntervalSeconds": {{json}} }""");
@@ -177,8 +212,8 @@ public sealed class SettingsLoaderTests : IDisposable
     {
         var result = LoadContent($$"""{ "pollIntervalSeconds": {{json}} }""");
 
-        Assert.Equal(1, result.Settings.PollIntervalSeconds);
-        Assert.Equal(["pollIntervalSeconds は整数で指定してください。既定値 1 を使います。"], result.Warnings);
+        Assert.Equal(2, result.Settings.PollIntervalSeconds);
+        Assert.Equal(["pollIntervalSeconds は整数で指定してください。既定値 2 を使います。"], result.Warnings);
     }
 
     [Fact]
@@ -225,7 +260,7 @@ public sealed class SettingsLoaderTests : IDisposable
     {
         var result = LoadContent("""{ "POLLINTERVALSECONDS": 0 }""");
 
-        Assert.Equal(["POLLINTERVALSECONDS は 1 〜 60 の範囲で指定してください。既定値 1 を使います。"], result.Warnings);
+        Assert.Equal(["POLLINTERVALSECONDS は 1 〜 60 の範囲で指定してください。既定値 2 を使います。"], result.Warnings);
     }
 
     [Fact]
@@ -235,7 +270,7 @@ public sealed class SettingsLoaderTests : IDisposable
 
         var result = SettingsLoader.Load(path);
 
-        Assert.Equal(ExpandedDefault, result.Settings);
+        Assert.Equal(AppSettings.Default, result.Settings);
         Assert.Equal([$"config.json が見つかりません: {path}。既定値で動作します。"], result.Warnings);
     }
 
@@ -244,7 +279,7 @@ public sealed class SettingsLoaderTests : IDisposable
     {
         var result = LoadContent("{ this is not json ");
 
-        Assert.Equal(ExpandedDefault, result.Settings);
+        Assert.Equal(AppSettings.Default, result.Settings);
         var warning = Assert.Single(result.Warnings);
         Assert.Contains("解析", warning);
         Assert.StartsWith("config.json を解析できません: ", warning);
@@ -261,7 +296,7 @@ public sealed class SettingsLoaderTests : IDisposable
         var result = LoadContent(content);
 
         Assert.Empty(result.Warnings);
-        Assert.Equal(ExpandedDefault, result.Settings);
+        Assert.Equal(AppSettings.Default, result.Settings);
     }
 
     // ルートがオブジェクトでない JSON は解析の警告にする（旧版は PowerShell 固有の型のプロパティ名を未知のキーとして警告する）
@@ -273,7 +308,7 @@ public sealed class SettingsLoaderTests : IDisposable
     {
         var result = LoadContent(content);
 
-        Assert.Equal(ExpandedDefault, result.Settings);
+        Assert.Equal(AppSettings.Default, result.Settings);
         var warning = Assert.Single(result.Warnings);
         Assert.StartsWith("config.json を解析できません: ", warning);
     }
@@ -301,19 +336,19 @@ public sealed class SettingsLoaderTests : IDisposable
     [Fact]
     public void Load_DuplicateKey_ValidThenInvalid_UsesDefaultWithOneWarning()
     {
-        var result = LoadContent("""{ "pollIntervalSeconds": 2, "pollIntervalSeconds": 0 }""");
+        var result = LoadContent("""{ "pollIntervalSeconds": 3, "pollIntervalSeconds": 0 }""");
 
-        Assert.Equal(1, result.Settings.PollIntervalSeconds);
-        Assert.Equal(["pollIntervalSeconds は 1 〜 60 の範囲で指定してください。既定値 1 を使います。"], result.Warnings);
+        Assert.Equal(2, result.Settings.PollIntervalSeconds);
+        Assert.Equal(["pollIntervalSeconds は 1 〜 60 の範囲で指定してください。既定値 2 を使います。"], result.Warnings);
     }
 
     [Fact]
     public void Load_DuplicateKey_InvalidThenValid_UsesLastValueWithoutWarnings()
     {
-        var result = LoadContent("""{ "pollIntervalSeconds": 0, "pollIntervalSeconds": 2 }""");
+        var result = LoadContent("""{ "pollIntervalSeconds": 0, "pollIntervalSeconds": 3 }""");
 
         Assert.Empty(result.Warnings);
-        Assert.Equal(2, result.Settings.PollIntervalSeconds);
+        Assert.Equal(3, result.Settings.PollIntervalSeconds);
     }
 
     [Fact]
@@ -329,10 +364,10 @@ public sealed class SettingsLoaderTests : IDisposable
     [Fact]
     public void Load_DuplicateKeyDifferingOnlyInCase_ValidThenInvalid_WarnsWithLastKeyName()
     {
-        var result = LoadContent("""{ "pollIntervalSeconds": 2, "POLLINTERVALSECONDS": 0 }""");
+        var result = LoadContent("""{ "pollIntervalSeconds": 3, "POLLINTERVALSECONDS": 0 }""");
 
-        Assert.Equal(1, result.Settings.PollIntervalSeconds);
-        Assert.Equal(["POLLINTERVALSECONDS は 1 〜 60 の範囲で指定してください。既定値 1 を使います。"], result.Warnings);
+        Assert.Equal(2, result.Settings.PollIntervalSeconds);
+        Assert.Equal(["POLLINTERVALSECONDS は 1 〜 60 の範囲で指定してください。既定値 2 を使います。"], result.Warnings);
     }
 
     // 未知のキーの重複は1件の警告にまとめる（完全一致は旧版と同じ。大文字小文字だけの違いも同じ規則で最後のキー名）
@@ -343,7 +378,7 @@ public sealed class SettingsLoaderTests : IDisposable
     {
         var result = LoadContent(content);
 
-        Assert.Equal(ExpandedDefault, result.Settings);
+        Assert.Equal(AppSettings.Default, result.Settings);
         Assert.Equal([expectedWarning], result.Warnings);
     }
 
@@ -354,19 +389,6 @@ public sealed class SettingsLoaderTests : IDisposable
 
         Assert.Empty(result.Warnings);
         Assert.Equal("スピーカー (INZONE Buds - Game)", result.Settings.BudsDevice);
-    }
-
-    [Fact]
-    public void Load_RepositoryConfigJson_MatchesDefaultsWithoutWarnings()
-    {
-        // テストプロジェクトがリポジトリの config.json をリンクして出力へコピーする
-        var path = Path.Combine(AppContext.BaseDirectory, "repo", "config.json");
-        Assert.True(File.Exists(path), path);
-
-        var result = SettingsLoader.Load(path);
-
-        Assert.Empty(result.Warnings);
-        Assert.Equal(ExpandedDefault, result.Settings);
     }
 
     [Fact]
@@ -381,22 +403,29 @@ public sealed class SettingsLoaderTests : IDisposable
         Assert.True(File.Exists(path));
         var result = SettingsLoader.Load(path);
         Assert.Empty(result.Warnings);
-        Assert.Equal(ExpandedDefault, result.Settings);
+        Assert.Equal(AppSettings.Default, result.Settings);
     }
 
+    // 今の書き出し順から actionLogPath を抜いたもの。リポジトリ直下の config.json（旧版のもの）とはもう比べない
     [Fact]
-    public void CreateDefaultFileIfMissing_WritesSameKeyOrderAndValuesAsRepositoryConfig()
+    public void CreateDefaultFileIfMissing_WritesExpectedKeys()
     {
         var path = Path.Combine(_dir, "config.json");
         Assert.True(SettingsLoader.CreateDefaultFileIfMissing(path));
 
         using var created = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
-        using var repository = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "repo", "config.json"), Encoding.UTF8));
 
         Assert.Equal(
-            repository.RootElement.EnumerateObject().Select(p => p.Name),
+            [
+                "budsDevice", "speakerDevice", "switchOnConnect", "switchOnDisconnect", "pollIntervalSeconds",
+                "idlePollIntervalSeconds", "startupSyncMaxAgeMinutes", "logLevel", "maxLogSizeKB",
+            ],
             created.RootElement.EnumerateObject().Select(p => p.Name));
-        Assert.True(JsonElement.DeepEquals(repository.RootElement, created.RootElement));
+        Assert.Equal(2, created.RootElement.GetProperty("pollIntervalSeconds").GetInt32());
+
+        var result = SettingsLoader.Load(path);
+        Assert.Empty(result.Warnings);
+        Assert.Equal(AppSettings.Default, result.Settings);
     }
 
     [Fact]
@@ -432,7 +461,7 @@ public sealed class SettingsLoaderTests : IDisposable
 
         Assert.Empty(result.Warnings);
         Assert.Equal(
-            ExpandedDefault with
+            AppSettings.Default with
             {
                 BudsInputDevice = "ヘッドセット マイク (INZONE Buds - Chat)",
                 SpeakerInputDevice = "マイク (USB Microphone)",

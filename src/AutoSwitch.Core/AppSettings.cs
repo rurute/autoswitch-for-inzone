@@ -3,24 +3,23 @@ namespace AutoSwitch.Core;
 public enum LogLevel { Debug, Info, Warn, Error }
 
 /// <summary>
-/// 設定値。既定値と整数の範囲は旧版 Config.psm1 に合わせる。
+/// 設定値。既定値と整数の範囲は旧版 Config.psm1 に合わせる。ただし PollIntervalSeconds の既定は
+/// ドングルへの問い合わせの間隔として 2 にする（Issue rurute/inzone-auto-switch#23）。旧版の actionLogPath は使わないので持たない。
 /// BudsInputDevice / SpeakerInputDevice は録音の切り替え先（Issue rurute/inzone-auto-switch#8）。空は未設定で、その向きの録音を切り替えない。
 /// 旧版に無い項目なので、既存の呼び出しを壊さないよう省略可能な末尾の引数にする。
 /// </summary>
 public sealed record AppSettings(
     string BudsDevice, string SpeakerDevice, bool SwitchOnConnect, bool SwitchOnDisconnect,
-    string ActionLogPath, int PollIntervalSeconds, int IdlePollIntervalSeconds,
+    int PollIntervalSeconds, int IdlePollIntervalSeconds,
     int StartupSyncMaxAgeMinutes, LogLevel LogLevel, int MaxLogSizeKB,
     string BudsInputDevice = "", string SpeakerInputDevice = "")
 {
-    /// <summary>ActionLogPath は展開前の %APPDATA% 表記</summary>
     public static AppSettings Default { get; } = new(
         BudsDevice: "スピーカー (INZONE Buds - Game)",
         SpeakerDevice: "スピーカー (Realtek(R) Audio)",
         SwitchOnConnect: true,
         SwitchOnDisconnect: true,
-        ActionLogPath: @"%APPDATA%\Sony\INZONE Hub\ActionLog.log",
-        PollIntervalSeconds: 1,
+        PollIntervalSeconds: 2,
         IdlePollIntervalSeconds: 5,
         StartupSyncMaxAgeMinutes: 10,
         LogLevel: LogLevel.Info,
