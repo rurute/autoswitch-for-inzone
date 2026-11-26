@@ -2,6 +2,8 @@
 
 Sony INZONE Buds の接続／切断に追従して、Windows 11 の既定の再生デバイス（と、設定すれば録音デバイス）を自動で切り替えるトレイ常駐アプリ。
 
+> ソニーとは関係のない、個人が作った非公式のツールである。ソニーによるサポートや保証はない。
+
 USB トランシーバーが常時接続されていると、Buds をケースに戻してもオーディオデバイスは消えないため、
 Windows は出力先を切り替えてくれない。このアプリは Buds の USB ドングルに直接問い合わせて接続／切断を判定し、
 **状態が変わったときだけ**既定のデバイスを切り替える。INZONE Hub を常駐させなくてよい（起動していても動く）。
@@ -186,3 +188,17 @@ dotnet test --project tests\AutoSwitch.App.Tests\AutoSwitch.App.Tests.csproj
 `src/INZONE-AutoSwitch.ps1`、`src/modules/`、`scripts/Install.ps1` などは、最初に作った PowerShell 版（AudioDeviceCmdlets とスケジュールタスクで動く）である。
 現在は C# 版を使っており、旧版はいつでも戻せるように残してある。旧版からの移行と、旧版へ戻す手順は [運用手順](docs/operations-minimal-csharp.md) を参照。
 **旧版と C# 版を同時に動かさないこと**（互いに既定デバイスを奪い合う）。
+
+## 謝辞
+
+ドングルとの通信（バッテリーの問い合わせと返答の形）は、作者が [battery-hub](https://github.com/battery-hub/battery-hub) に寄稿した INZONE のドライバ（`src/main/hid/drivers/inzone.js`）で確かめたものに基づく。
+
+## 商標
+
+ソニーおよび INZONE は、ソニーグループ株式会社またはその関連会社の登録商標または商標である。
+このアプリはソニーグループ株式会社およびその関連会社とは関係がなく、承認や後援も受けていない。
+その他の会社名・製品名は、各社の商標または登録商標である。
+
+## ライセンス
+
+[MIT License](LICENSE)
