@@ -382,7 +382,7 @@ public sealed class MonitorLoopTests : IDisposable
         using var waiter = new WakeableWaiter();
         var thread = StartRun(CreateEngine(clock), waiter);
 
-        // Hub がまとめて書くときの代わりに、1 秒間 1 ms おきに起こす
+        // ドングルの知らせがまとまって届くときの代わりに、1 秒間 1 ms おきに起こす
         var start = Stopwatch.GetTimestamp();
         while (Stopwatch.GetElapsedTime(start) < TimeSpan.FromSeconds(1))
         {

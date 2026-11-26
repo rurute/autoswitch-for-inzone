@@ -15,7 +15,7 @@ public class StateTransitionTests
         Assert.Equal(incoming, newState);
     }
 
-    // ConnectDevice の連続発生で、手動変更後に切り替え直さないための根拠
+    // 問い合わせのたびに同じ状態が返っても、手動変更後に切り替え直さないための根拠
     [Theory]
     [InlineData(HeadsetState.Connected)]
     [InlineData(HeadsetState.Disconnected)]

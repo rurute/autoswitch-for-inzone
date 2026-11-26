@@ -3,8 +3,8 @@ namespace AutoSwitch.Core;
 public static class StateTransition
 {
     /// <summary>
-    /// 同じ状態へのイベントは遷移とみなさない。INZONE Hub は ConnectDevice を重複送出するうえ、
-    /// ユーザーが手動で出力を変えた後に再送されても上書きしないための根拠でもある。
+    /// 同じ状態は遷移とみなさない。ドングルへの問い合わせは、状態が変わっていなくても毎回同じ状態を返すので、
+    /// そのたびに切り替え直さないため。ユーザーが手動で出力を変えた後に、同じ状態が返っても上書きしないための根拠でもある。
     /// </summary>
     public static (bool Changed, HeadsetState NewState) Resolve(HeadsetState current, HeadsetState incoming)
     {

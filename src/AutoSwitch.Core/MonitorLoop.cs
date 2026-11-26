@@ -33,13 +33,13 @@ public sealed class SystemWaiter : IWaiter
 }
 
 /// <summary>
-/// 外から起こせる待機。ActionLog.log の変更通知で待機を打ち切り、すぐ次の Tick を行うために使う。
+/// 外から起こせる待機。ドングルからの知らせ（NotificationWaker）で待機を打ち切り、すぐ次の Tick を行うために使う。
 /// 起こされたのは 1 回分にまとめ、待機の外で起こされていれば次の Wait はすぐ終わる。
-/// 起こされて終わるときも、前回の戻りから最小間隔を空ける（Hub がまとめて書く間に読み取りが続きすぎないため）
+/// 起こされて終わるときも、前回の戻りから最小間隔を空ける（ふたを閉じた直後など、知らせが短い間にまとまって届いたときに、問い合わせが続きすぎないため）
 /// </summary>
 public sealed class WakeableWaiter : IWaiter, IDisposable
 {
-    /// <summary>起こされたときの、前回の戻りからの最小間隔。計画の Task 1 の計測で初期値のまま決めた</summary>
+    /// <summary>起こされたときの、前回の戻りからの最小間隔。Issue rurute/inzone-auto-switch#21 の計画（docs/superpowers/plans/2026-10-18-read-on-file-change.md）の Task 1 の計測で、初期値のまま決めた</summary>
     public static readonly TimeSpan DefaultMinInterval = TimeSpan.FromMilliseconds(100);
 
     // WaitHandle.WaitOne が受け付ける最大の待機時間（int.MaxValue ミリ秒）
