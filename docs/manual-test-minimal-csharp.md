@@ -1,6 +1,5 @@
 # 最小 C# トレイ版 — 手動確認記録
 
-- 対象計画: [`superpowers/plans/2026-09-15-inzone-minimal-csharp.md`](superpowers/plans/2026-09-15-inzone-minimal-csharp.md)
 - 記録方針: エンドポイント ID の GUID やユーザー名など、個人・端末固有の値はマスクする（`{0.0.0.00000000}.{xxxxxxxx-...-<末尾4桁>}`、`<user>`）。
 
 ## 環境

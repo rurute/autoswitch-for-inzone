@@ -1,6 +1,5 @@
 # タスクバーに Buds の残量を出す — 実機確認記録
 
-- 対象計画: [`superpowers/plans/2026-11-26-taskbar-battery.md`](superpowers/plans/2026-11-26-taskbar-battery.md)（Task 10 Step 2）
 - 対象 spec: [`superpowers/specs/2026-11-26-taskbar-battery-design.md`](superpowers/specs/2026-11-26-taskbar-battery-design.md)「実機での確認」（Issue rurute/inzone-auto-switch#27）
 - 記録方針: シリアル番号・ユーザー名など、個人・端末固有の値は写さない。ログの行は、日時・レベル・本文をそのまま写す。
 

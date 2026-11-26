@@ -1,6 +1,5 @@
 # ドングルへの問い合わせで接続・切断を判定する — 実機確認記録
 
-- 対象計画: [`superpowers/plans/2026-11-25-dongle-detection.md`](superpowers/plans/2026-11-25-dongle-detection.md)（Task 4 Step 5、Task 7 Step 3）
 - 対象 spec: [`superpowers/specs/2026-11-25-dongle-detection-design.md`](superpowers/specs/2026-11-25-dongle-detection-design.md)「実機での確認」（Issue rurute/inzone-auto-switch#23）
 - 記録方針: シリアル番号・ユーザー名など、個人・端末固有の値は写さない。ログの行は、日時・レベル・本文をそのまま写す。
 

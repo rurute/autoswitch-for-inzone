@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace AutoSwitch.Core.Tests;
 
-// 旧版 INZONE-AutoSwitch.ps1 の監視ループを基準に、偽の問い合わせ（FakeBudsProbe）で作ったエンジンと差し替えた待機で検証する。
+// 最初に作った PowerShell 版の監視ループを基準に、偽の問い合わせ（FakeBudsProbe）で作ったエンジンと差し替えた待機で検証する。
 // 待機は ScriptedWaiter が記録するだけで、実際には待たない
 public sealed class MonitorLoopTests : IDisposable
 {

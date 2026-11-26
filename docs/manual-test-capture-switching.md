@@ -1,6 +1,5 @@
 # 録音デバイスの切り替え — 手動確認記録
 
-- 対象計画: [`superpowers/plans/2026-09-16-capture-device-switching.md`](superpowers/plans/2026-09-16-capture-device-switching.md)
 - 対象 spec: [`superpowers/specs/2026-09-16-capture-device-switching-design.md`](superpowers/specs/2026-09-16-capture-device-switching-design.md)（Issue rurute/inzone-auto-switch#8）
 - 記録方針: エンドポイント ID の GUID やユーザー名など、個人・端末固有の値はマスクする（`{0.0.0.00000000}.{xxxxxxxx-...-<末尾4桁>}`、`<user>`）。
 

@@ -183,12 +183,6 @@ dotnet test --project tests\AutoSwitch.App.Tests\AutoSwitch.App.Tests.csproj
 
 設計の詳細は `docs/superpowers/specs/` を参照。
 
-## 旧版（PowerShell 版）について
-
-`src/INZONE-AutoSwitch.ps1`、`src/modules/`、`scripts/Install.ps1` などは、最初に作った PowerShell 版（AudioDeviceCmdlets とスケジュールタスクで動く）である。
-現在は C# 版を使っており、旧版はいつでも戻せるように残してある。旧版からの移行と、旧版へ戻す手順は [運用手順](docs/operations-minimal-csharp.md) を参照。
-**旧版と C# 版を同時に動かさないこと**（互いに既定デバイスを奪い合う）。
-
 ## 謝辞
 
 ドングルとの通信（バッテリーの問い合わせと返答の形）は、作者が [battery-hub](https://github.com/battery-hub/battery-hub) に寄稿した INZONE のドライバ（`src/main/hid/drivers/inzone.js`）で確かめたものに基づく。

@@ -1,6 +1,5 @@
 # ログの変更通知ですぐ読む — 手動確認記録
 
-- 対象計画: [`superpowers/plans/2026-10-18-read-on-file-change.md`](superpowers/plans/2026-10-18-read-on-file-change.md)
 - 対象 spec: [`superpowers/specs/2026-10-18-read-on-file-change-design.md`](superpowers/specs/2026-10-18-read-on-file-change-design.md)（Issue rurute/inzone-auto-switch#21）
 - 記録方針: シリアル番号・ユーザー名など、個人・端末固有の値は写さない。`logId` は Hub が行ごとに付ける乱数の ID で、端末固有の値ではない。
 

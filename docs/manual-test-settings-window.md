@@ -1,6 +1,5 @@
 # 設定画面と再起動なしの反映 — 手動確認記録
 
-- 対象計画: [`superpowers/plans/2026-09-17-settings-window.md`](superpowers/plans/2026-09-17-settings-window.md)（Task 5）
 - 対象 spec: [`superpowers/specs/2026-09-17-settings-window-design.md`](superpowers/specs/2026-09-17-settings-window-design.md)（Issue rurute/inzone-auto-switch#9）§8「実機確認」
 - 記録方針: エンドポイント ID の GUID やユーザー名など、個人・端末固有の値はマスクする（`{0.0.0.00000000}.{xxxxxxxx-...-<末尾4桁>}`、`<user>`）。INZONE Hub の ActionLog.log の内容はシリアル番号を含むため、時刻と種類だけを書く。
 

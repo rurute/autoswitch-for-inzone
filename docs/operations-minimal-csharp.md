@@ -2,86 +2,41 @@
 
 ## 1. この文書の対象
 
-C# トレイ版（新版）を日常利用するための手順書である。旧版 PowerShell 版から新版へ移す手順、新版を入れ替える手順、旧版へ戻す手順、自動起動の扱い、うまく動かないときの確認先をまとめる。
-
-旧版 PowerShell 版のコード・設定・スクリプト・スケジュールタスクの定義は**消していない**。新版で困ったときは、この文書の「5. 復元（新版 → 旧版）」でいつでも旧版へ戻せる。
+C# トレイ版を日常利用するための手順書である。配置する手順、入れ替える手順、自動起動の扱い、うまく動かないときの確認先をまとめる。
 
 関連文書:
 
-- [承認済み spec](superpowers/specs/2026-09-15-inzone-minimal-csharp-design.md) — 新版の設計と境界
-- [実装計画](superpowers/plans/2026-09-15-inzone-minimal-csharp.md) — 段階1〜4の実行手順。本書のコマンドは §10「移行と復元の手順」から写した
+- [承認済み spec](superpowers/specs/2026-09-15-inzone-minimal-csharp-design.md) — 設計と境界
 - [実機確認の記録](manual-test-minimal-csharp.md) — 各段階で実機を確認した手順と結果
 
 ## 2. 前提
 
 - Windows 11
-- .NET 10 デスクトップランタイム。端末には .NET 10 SDK があり、デスクトップランタイムはそれに含まれる。新版はフレームワーク依存の publish なので、ランタイムが無いと起動しない
+- .NET 10 デスクトップランタイム。端末には .NET 10 SDK があり、デスクトップランタイムはそれに含まれる。フレームワーク依存の publish なので、ランタイムが無いと起動しない
 - 管理者権限は要らない。この文書のコマンドはすべて通常の権限で動く
 - 配置先: `%LOCALAPPDATA%\AutoSwitchForInzone\bin`（exe と dll）
 - 設定: `%LOCALAPPDATA%\AutoSwitchForInzone\config.json`
 - ログ: `%LOCALAPPDATA%\AutoSwitchForInzone\logs\`
 - 自動起動: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` の値名 `AutoSwitchForInzone`
-- 旧版の配置先は `%LOCALAPPDATA%\INZONE-AutoSwitch` で、新版とは完全に分かれている
 - 以下、`<repo>` はこのリポジトリのルートを指す
 
-## 3. 移行（旧版 → 新版）
-
-**旧版と新版を同時に動かさないこと。** 新版の Mutex は新版どうしの二重起動しか防がず、**旧版との同時起動は防がない**。両方が動くと、どちらも Buds の接続・切断に合わせて切り替えるので、互いに既定デバイスを奪い合う（旧版は ActionLog.log を、新版は Buds のドングルを見て判定する）。
-
-**手順3が関門である。** プロセス数が `0` になるのを確かめるまで、手順4（配置）と手順5（起動）へ進まない。`Stop-AutoSwitchProcess` は停止の失敗を警告にとどめるため、コマンドがエラーを出さなかったことは旧版が止まった根拠にならない。
+## 3. 配置
 
 ```powershell
-# 1. 旧版の自動起動を止める（定義は残す）
-Disable-ScheduledTask -TaskName 'INZONE Auto Switch'
-(Get-ScheduledTask -TaskName 'INZONE Auto Switch').State   # Disabled になっていること
-
-# 2. 実行中の旧版を止める
-. <repo>\scripts\Common.ps1
-Stop-AutoSwitchProcess
-
-# 3. 止まったことを自分で確かめる。0 になるまで次へ進まない
-#    Stop-AutoSwitchProcess は停止の失敗を警告にとどめるため、成否を戻り値では判断できない
-#    powershell -Command で実行すると自分の command line もパターンに一致するため、自分（$PID）を除いて数える
-@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
-    Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*INZONE-AutoSwitch.ps1*' }).Count
-
-# 4. 新版を配置する（config.json と logs\ には触らない）
+# 1. 配置する（config.json と logs\ には触らない）
 powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\scripts\Install-TrayApp.ps1
 
-# 5. 起動する。以後はトレイメニューの「Windows ログオン時の自動起動」を ON にする
+# 2. 起動する
 Start-Process "$env:LOCALAPPDATA\AutoSwitchForInzone\bin\AutoSwitch.App.exe"
 ```
 
 起動したら、トレイアイコンを右クリックして「**Windows ログオン時の自動起動(&A)**」を選び、チェックが付いたことを確かめる。配置しても起動しても自動では登録されないので、ここで ON にしないと次回のログオンでは起動しない。
 
-設定は旧版から自動では移らない。旧版の `config.json` から必要な値を手動で `%LOCALAPPDATA%\AutoSwitchForInzone\config.json` へ転記する。設定の変更は新版の再起動で反映される。
-
-## 4. 更新（新版の入れ替え）
+## 4. 更新（入れ替え）
 
 トレイの「終了」で終わらせてから `Install-TrayApp.ps1` を実行し、もう一度起動する。配置先のパスが変わらないので、Run キーの値はそのままでよい。プロセスが残っている間は配置スクリプトがエラーで中断するので、そこが関門になる。
 
-## 5. 復元（新版 → 旧版）
-
-**手順3が関門である。** `AutoSwitch.App` のプロセス数が `0` になるのを確かめるまで、手順4（旧版の有効化と起動）へ進まない。**トレイアイコンが消えたことは、新版が止まった根拠にならない。** アイコンは「終了」を選んだ時点で消えるが、監視スレッドの停止を待つ分だけプロセスは残りうる。
-
-```powershell
-# 1. 新版のトレイメニューで自動起動を OFF にし、チェックが外れたことを確かめる
-Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
-    -Name AutoSwitchForInzone -ErrorAction SilentlyContinue   # 何も返らないこと
-
-# 2. トレイメニューの「終了」を選ぶ
-# 3. 新版が終わったことを自分で確かめる。0 になるまで次へ進まない
-#    アイコンは終了を選んだ時点で消えるが、監視スレッドの停止を待つ分だけプロセスは残りうる（§6）
-@(Get-Process -Name 'AutoSwitch.App' -ErrorAction SilentlyContinue).Count
-
-# 4. 旧版を戻す
-Enable-ScheduledTask -TaskName 'INZONE Auto Switch'
-Start-ScheduledTask  -TaskName 'INZONE Auto Switch'
-```
-
-新版のファイルと設定はそのまま残るので、あとでもう一度「3. 移行」を踏めば新版へ戻せる。
-
-## 6. 困ったとき
+## 5. 困ったとき
 
 ### ログを読む
 
@@ -89,9 +44,9 @@ Start-ScheduledTask  -TaskName 'INZONE Auto Switch'
 
 - `[ERROR]` — 切り替えや自動起動の登録に失敗した行
 - `[WARN]` — Buds のドングルを読めない、登録状態を読み取れない、といった行
-- `自動起動:` — 起動時に Run キーを読めたときに `[INFO]` で1行出る。そのとき Run キーがどうだったかが分かる（例: `自動起動: 有効（HKCU\Software\Microsoft\Windows\CurrentVersion\Run）`）。読めなかったときはこの行の代わりに `[WARN] 自動起動の登録状態を読み取れません` が出る。また `config.json` の `logLevel` を `Warn` か `Error` にしているとこの `[INFO]` の行は落ちる（既定は `Info`）。**この行が無いことは、新版が起動しなかった証拠にはならない。** いま動いているかどうかは、`@(Get-Process -Name 'AutoSwitch.App' -ErrorAction SilentlyContinue).Count` で見る
-- `録音の切り替え:` — 起動時に `[INFO]` で1行出る。録音の切り替え先の設定が分かる（例: `録音の切り替え: 接続時=ヘッドセット マイク (INZONE Buds - Chat) / 切断時=（未設定）`）。「7. 録音デバイスも切り替える」を参照
-- `監視対象: INZONE Buds の USB ドングル（054c:0ec2）` — 起動時に `[INFO]` で1行出る。新版は INZONE Hub の `ActionLog.log` ではなく、Buds の USB ドングルに直接問い合わせて接続・切断を判定する（Hub は起動していなくてよい）
+- `自動起動:` — 起動時に Run キーを読めたときに `[INFO]` で1行出る。そのとき Run キーがどうだったかが分かる（例: `自動起動: 有効（HKCU\Software\Microsoft\Windows\CurrentVersion\Run）`）。読めなかったときはこの行の代わりに `[WARN] 自動起動の登録状態を読み取れません` が出る。また `config.json` の `logLevel` を `Warn` か `Error` にしているとこの `[INFO]` の行は落ちる（既定は `Info`）。**この行が無いことは、アプリが起動しなかった証拠にはならない。** いま動いているかどうかは、`@(Get-Process -Name 'AutoSwitch.App' -ErrorAction SilentlyContinue).Count` で見る
+- `録音の切り替え:` — 起動時に `[INFO]` で1行出る。録音の切り替え先の設定が分かる（例: `録音の切り替え: 接続時=ヘッドセット マイク (INZONE Buds - Chat) / 切断時=（未設定）`）。「6. 録音デバイスも切り替える」を参照
+- `監視対象: INZONE Buds の USB ドングル（054c:0ec2）` — 起動時に `[INFO]` で1行出る。このアプリは INZONE Hub の `ActionLog.log` ではなく、Buds の USB ドングルに直接問い合わせて接続・切断を判定する（Hub は起動していなくてよい）
 - `INZONE Buds のドングルを読めません。` — `[WARN]`。ドングルが見つからない・開けない・読み書きに失敗したときに、読めなくなった時点で1回だけ出る（例: `INZONE Buds のドングルを読めません。5 秒おきに探し直します: INZONE Buds のドングルが見つかりません`。秒数は `idlePollIntervalSeconds`）。読めない間は状態を変えず、切り替えもしない。ドングルが挿さっているか、ほかのソフトが独占していないかを確かめる
 - `INZONE Buds のドングルを読めるようになりました。` — `[INFO]`。読めない状態から戻った印。このあと今の状態に合わせて1回切り替える
 - `現在の状態を Connected と判定しました。` / `現在の状態を Disconnected と判定しました。` — `[INFO]`。起動時と、ドングルを読めるようになったときに出る。前の状態と同じでも、今の状態に合わせて1回切り替える。`config.json` の `startupSyncMaxAgeMinutes` が `0` のときは、続けて `startupSyncMaxAgeMinutes が 0 のため切り替えません。` が付き、切り替えない
@@ -99,7 +54,7 @@ Start-ScheduledTask  -TaskName 'INZONE Auto Switch'
 - `INZONE Buds のドングルを 2 秒で閉じられませんでした。` — `[WARN]`。終了のときにドングルを閉じるのを 2 秒で打ち切った印。待たずに終了処理を進める
 - `既定の再生デバイスを切り替えました:` — 実際に切り替えたか
 - `既定の録音デバイスを切り替えました:` — 録音も実際に切り替えたか。`録音デバイスが見つかりません:` は、設定した名前が有効な録音デバイスの一覧に無いことを表す
-- `設定画面で保存しました:` — 設定画面で保存した6項目。この行より後の接続・切断から新しい設定で切り替わる。保存に失敗したときは `[WARN] 設定を保存できません:` が出る。「8. 設定画面」を参照
+- `設定画面で保存しました:` — 設定画面で保存した6項目。この行より後の接続・切断から新しい設定で切り替わる。保存に失敗したときは `[WARN] 設定を保存できません:` が出る。「7. 設定画面」を参照
 
 設定ファイルはトレイメニューの「設定ファイルを開く(&C)」から開ける。
 
@@ -135,11 +90,11 @@ Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
 
 OFF にせずに移すと、Run キーには古いパスが残ったままになり、次のログオンで起動に失敗する。
 
-**手順2と手順3を飛ばさないこと。** 自動起動を OFF にしても、動いている新版はそのまま動き続ける。古いプロセスが残ったまま移動先の exe を起動しても、単一起動の Mutex を古いプロセスが握っているので、2つ目は何もせず終了コード0 で即座に終わる。新しいインスタンスにはならない。そのうえで古いプロセスのメニューから自動起動を ON にすると、そのプロセスが**起動したときのパス**（＝移動前の古いパス）が Run キーへ書かれるので、直したつもりで直っていない状態になる。ここでも「5. 復元」と同じく、トレイアイコンが消えたことは新版が止まった根拠にならない。
+**手順2と手順3を飛ばさないこと。** 自動起動を OFF にしても、動いているアプリはそのまま動き続ける。古いプロセスが残ったまま移動先の exe を起動しても、単一起動の Mutex を古いプロセスが握っているので、2つ目は何もせず終了コード0 で即座に終わる。新しいインスタンスにはならない。そのうえで古いプロセスのメニューから自動起動を ON にすると、そのプロセスが**起動したときのパス**（＝移動前の古いパス）が Run キーへ書かれるので、直したつもりで直っていない状態になる。トレイアイコンは「終了」を選んだ時点で消えるので、アイコンが消えたことはアプリが止まった根拠にならない。
 
-## 7. 録音デバイスも切り替える
+## 6. 録音デバイスも切り替える
 
-再生デバイスに加えて、録音デバイス（マイク）の既定も接続・切断に合わせて切り替えられる。**初期状態では録音は切り替えない。**使うには「8. 設定画面」で録音デバイスを選んで保存する（再起動は要らない）。手で書く場合は、`%LOCALAPPDATA%\AutoSwitchForInzone\config.json` に次の2つのキーを書き足し、新版を再起動する（手で編集した内容はアプリの起動時にだけ読む）。
+再生デバイスに加えて、録音デバイス（マイク）の既定も接続・切断に合わせて切り替えられる。**初期状態では録音は切り替えない。**使うには「7. 設定画面」で録音デバイスを選んで保存する（再起動は要らない）。手で書く場合は、`%LOCALAPPDATA%\AutoSwitchForInzone\config.json` に次の2つのキーを書き足し、アプリを再起動する（手で編集した内容はアプリの起動時にだけ読む）。
 
 ```json
 "budsInputDevice": "ヘッドセット マイク (INZONE Buds - Chat)",
@@ -158,7 +113,7 @@ OFF にせずに移すと、Run キーには古いパスが残ったままにな
 dotnet run --project <repo>\tools\AudioSmoke -- capture list
 ```
 
-## 8. 設定画面
+## 7. 設定画面
 
 トレイメニューの「設定(&S)...」、またはトレイアイコンのダブルクリックで開く。開いているときにもう一度開くと、同じ画面が前面に出る。
 

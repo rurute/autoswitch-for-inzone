@@ -39,7 +39,7 @@ public sealed class SystemWaiter : IWaiter
 /// </summary>
 public sealed class WakeableWaiter : IWaiter, IDisposable
 {
-    /// <summary>起こされたときの、前回の戻りからの最小間隔。Issue rurute/inzone-auto-switch#21 の計画（docs/superpowers/plans/2026-10-18-read-on-file-change.md）の Task 1 の計測で、初期値のまま決めた</summary>
+    /// <summary>起こされたときの、前回の戻りからの最小間隔。ログの変更通知を受けて読む変更（Issue rurute/inzone-auto-switch#21）の計測で、初期値のまま決めた</summary>
     public static readonly TimeSpan DefaultMinInterval = TimeSpan.FromMilliseconds(100);
 
     // WaitHandle.WaitOne が受け付ける最大の待機時間（int.MaxValue ミリ秒）
@@ -173,7 +173,7 @@ public sealed class WakeableWaiter : IWaiter, IDisposable
 }
 
 /// <summary>
-/// 待機と tick の繰り返し。手順とログの文言は旧版 INZONE-AutoSwitch.ps1 の監視ループに合わせる。
+/// 待機と tick の繰り返し。手順とログの文言は、最初に作った PowerShell 版の監視ループに合わせてある。
 /// </summary>
 public static class MonitorLoop
 {

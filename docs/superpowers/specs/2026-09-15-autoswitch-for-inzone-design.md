@@ -1,7 +1,7 @@
 # AutoSwitch for INZONE — 設計仕様（C# / タスクトレイ常駐・一般公開版）
 
 - 日付: 2026-09-15
-- ステータス: 承認済み（実装計画: `docs/superpowers/plans/2026-09-15-autoswitch-for-inzone.md`）
+- ステータス: 承認済み
 - 関連: Issue rurute/inzone-auto-switch#1「タスクトレイ常駐アプリ化（最終ゴール）」
 - 前身: `docs/superpowers/specs/2026-09-15-inzone-auto-switch-design.md`（PowerShell 版 v1。本書では「v1」と呼ぶ）
 - 対象環境: Windows 11 / .NET 10（self-contained 同梱のため利用者の導入は不要）
