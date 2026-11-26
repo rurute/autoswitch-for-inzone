@@ -7,12 +7,13 @@ public enum LogLevel { Debug, Info, Warn, Error }
 /// ドングルへの問い合わせの間隔として 2 にする（Issue rurute/inzone-auto-switch#23）。旧版の actionLogPath は使わないので持たない。
 /// BudsInputDevice / SpeakerInputDevice は録音の切り替え先（Issue rurute/inzone-auto-switch#8）。空は未設定で、その向きの録音を切り替えない。
 /// 旧版に無い項目なので、既存の呼び出しを壊さないよう省略可能な末尾の引数にする。
+/// ShowTaskbarBattery はタスクバーに残量を出すか（Issue rurute/inzone-auto-switch#27）。既定は false（新しい版を入れただけで見た目を変えない）。
 /// </summary>
 public sealed record AppSettings(
     string BudsDevice, string SpeakerDevice, bool SwitchOnConnect, bool SwitchOnDisconnect,
     int PollIntervalSeconds, int IdlePollIntervalSeconds,
     int StartupSyncMaxAgeMinutes, LogLevel LogLevel, int MaxLogSizeKB,
-    string BudsInputDevice = "", string SpeakerInputDevice = "")
+    string BudsInputDevice = "", string SpeakerInputDevice = "", bool ShowTaskbarBattery = false)
 {
     public static AppSettings Default { get; } = new(
         BudsDevice: "スピーカー (INZONE Buds - Game)",
@@ -25,7 +26,8 @@ public sealed record AppSettings(
         LogLevel: LogLevel.Info,
         MaxLogSizeKB: 1024,
         BudsInputDevice: "",
-        SpeakerInputDevice: "");
+        SpeakerInputDevice: "",
+        ShowTaskbarBattery: false);
 
     /// <summary>起動時のログに出す、録音の切り替え先の要約。未設定の向きは「（未設定）」</summary>
     public string DescribeCaptureSwitching() =>

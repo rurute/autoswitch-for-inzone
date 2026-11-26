@@ -4,11 +4,18 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <RootNamespace>AutoSwitch.App</RootNamespace>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- UI Automation（System.Windows.Automation）の参照のためだけに使う。WPF の画面は作らない -->
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\AutoSwitch.Core\AutoSwitch.Core.csproj" />
     <ProjectReference Include="..\AutoSwitch.Audio\AutoSwitch.Audio.csproj" />
     <ProjectReference Include="..\AutoSwitch.Hid\AutoSwitch.Hid.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- UseWPF を足すと暗黙の using から System.IO が外れる（WPF の Shapes.Path との衝突を避けるため）。
+         WPF の名前空間は暗黙に取り込まないので、これまでどおり System.IO を戻す -->
+    <Using Include="System.IO" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="AutoSwitch.App.Tests" />

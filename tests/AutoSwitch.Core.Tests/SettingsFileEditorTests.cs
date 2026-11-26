@@ -49,7 +49,7 @@ public sealed class SettingsFileEditorTests : IDisposable
     // ---- 保存: 書き換えの規則 ----
 
     [Fact]
-    public void Save_ReplacesOnlySixKeys_KeepsOtherKeysOrderAndValues()
+    public void Save_ReplacesOnlySevenKeys_KeepsOtherKeysOrderAndValues()
     {
         WriteConfig("""
             {
@@ -90,7 +90,8 @@ public sealed class SettingsFileEditorTests : IDisposable
             "  \"logLevel\": \"info\",\n" +
             "  \"budsInputDevice\": \"マイク (NEW Buds)\",\n" +
             "  \"speakerInputDevice\": \"\",\n" +
-            "  \"maxLogSizeKB\": 1024\n" +
+            "  \"maxLogSizeKB\": 1024,\n" +
+            "  \"showTaskbarBattery\": false\n" +
             "}\n",
             ReadText());
     }
@@ -111,7 +112,7 @@ public sealed class SettingsFileEditorTests : IDisposable
         var result = SettingsFileEditor.Save(_path, Saved);
 
         Assert.True(result.Succeeded);
-        // 6項目以外の重複（logLevel）はそのまま残す。無かった4キーは最後に spec §3 の順で足す
+        // 7項目以外の重複（logLevel）はそのまま残す。無かった5キーは最後に spec §3 の順（showTaskbarBattery は最後）で足す
         Assert.Equal(
             "{\n" +
             "  \"budsDevice\": \"スピーカー (NEW Buds)\",\n" +
@@ -121,13 +122,14 @@ public sealed class SettingsFileEditorTests : IDisposable
             "  \"budsInputDevice\": \"マイク (NEW Buds)\",\n" +
             "  \"speakerDevice\": \"スピーカー (NEW Speaker)\",\n" +
             "  \"speakerInputDevice\": \"\",\n" +
-            "  \"switchOnDisconnect\": true\n" +
+            "  \"switchOnDisconnect\": true,\n" +
+            "  \"showTaskbarBattery\": false\n" +
             "}\n",
             ReadText());
     }
 
     [Fact]
-    public void Save_EmptyObject_AppendsSixKeysInSpecOrder()
+    public void Save_EmptyObject_AppendsSevenKeysInSpecOrder()
     {
         WriteConfig("{}");
 
@@ -141,7 +143,8 @@ public sealed class SettingsFileEditorTests : IDisposable
             "  \"speakerDevice\": \"スピーカー (NEW Speaker)\",\n" +
             "  \"speakerInputDevice\": \"\",\n" +
             "  \"switchOnConnect\": false,\n" +
-            "  \"switchOnDisconnect\": true\n" +
+            "  \"switchOnDisconnect\": true,\n" +
+            "  \"showTaskbarBattery\": false\n" +
             "}\n",
             ReadText());
     }
@@ -186,6 +189,43 @@ public sealed class SettingsFileEditorTests : IDisposable
         Assert.Equal(before.Warnings, after.Warnings);
     }
 
+    [Fact]
+    public void Save_ShowTaskbarBattery_WritesKeyAndKeepsOthers()
+    {
+        WriteConfig("""
+            { "budsDevice": "A", "unknownKey": [1, 2], "showTaskbarBattery": false, "maxLogSizeKB": 2.0E3 }
+            """);
+
+        var result = SettingsFileEditor.Save(_path, Saved with { ShowTaskbarBattery = true });
+
+        Assert.True(result.Succeeded);
+        var text = ReadText();
+        Assert.Contains("\"unknownKey\": [", text);
+        Assert.Contains("\"maxLogSizeKB\": 2.0E3", text);
+        using var doc = System.Text.Json.JsonDocument.Parse(text);
+        var names = doc.RootElement.EnumerateObject().Select(p => p.Name).ToList();
+        Assert.Equal(2, names.IndexOf("showTaskbarBattery"));
+        Assert.True(doc.RootElement.GetProperty("showTaskbarBattery").GetBoolean());
+        Assert.True(SettingsLoader.Load(_path).Settings.ShowTaskbarBattery);
+    }
+
+    [Fact]
+    public void Save_ShowTaskbarBatteryMissing_AppendsAtEnd()
+    {
+        WriteConfig("""
+            { "budsDevice": "A", "speakerDevice": "B", "budsInputDevice": "", "speakerInputDevice": "",
+              "switchOnConnect": true, "switchOnDisconnect": true, "logLevel": "Info" }
+            """);
+
+        var result = SettingsFileEditor.Save(_path, Saved with { ShowTaskbarBattery = true });
+
+        Assert.True(result.Succeeded);
+        using var doc = System.Text.Json.JsonDocument.Parse(ReadText());
+        var last = doc.RootElement.EnumerateObject().Last();
+        Assert.Equal("showTaskbarBattery", last.Name);
+        Assert.Equal(System.Text.Json.JsonValueKind.True, last.Value.ValueKind);
+    }
+
     // ---- 保存: 読み直しで止まる場合 ----
 
     [Fact]
@@ -197,6 +237,18 @@ public sealed class SettingsFileEditorTests : IDisposable
         Assert.Equal($"config.json が見つかりません: {_path}", result.Error);
         Assert.False(File.Exists(_path));
         Assert.False(File.Exists(TempPath));
+    }
+
+    [Fact]
+    public void Save_FailureError_MaskedForLog_HidesFolderPath()
+    {
+        // 保存の失敗理由はパスを含む。ログへは LogPathMasker（AppPaths.ForLog）を通してから書く
+        var result = SettingsFileEditor.Save(_path, Saved);
+
+        var forLog = LogPathMasker.Mask(result.Error!, _dir, null);
+
+        Assert.Equal(@"config.json が見つかりません: %LOCALAPPDATA%" + Path.DirectorySeparatorChar + "config.json", forLog);
+        Assert.DoesNotContain(_dir, forLog, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -376,6 +428,16 @@ public sealed class SettingsFileEditorTests : IDisposable
         Assert.Equal(SwitchSettings.From(SettingsLoader.Load(_path).Settings), opened.Values);
         Assert.Null(opened.Problem);
         Assert.True(opened.CanSave);
+    }
+
+    [Fact]
+    public void Open_ReadsShowTaskbarBattery()
+    {
+        WriteConfig("""{ "showTaskbarBattery": true }""");
+
+        var opened = SettingsFileEditor.Open(_path);
+
+        Assert.True(opened.Values.ShowTaskbarBattery);
     }
 
     [Fact]

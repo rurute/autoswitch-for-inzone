@@ -137,7 +137,7 @@ public sealed class SettingsFormModelTests
 
         var settings = SettingsFormModel.ToSettings(
             Selected(model.BudsPlayback), Selected(model.BudsCapture), Selected(model.SpeakerPlayback), Selected(model.SpeakerCapture),
-            model.SwitchOnConnect, model.SwitchOnDisconnect);
+            model.SwitchOnConnect, model.SwitchOnDisconnect, model.ShowTaskbarBattery);
 
         Assert.Equal(current, settings);
     }
@@ -146,7 +146,7 @@ public sealed class SettingsFormModelTests
     public void ToSettings_NotSetCapture_SavesEmpty()
     {
         var settings = SettingsFormModel.ToSettings(
-            Device("BUDS"), NotSet, Device("SPEAKER"), null, false, true);
+            Device("BUDS"), NotSet, Device("SPEAKER"), null, false, true, false);
 
         Assert.Equal(new SwitchSettings("BUDS", "SPEAKER", "", "", false, true), settings);
     }
@@ -154,7 +154,26 @@ public sealed class SettingsFormModelTests
     [Fact]
     public void ToSettings_PlaybackNotSelectedOrEmpty_ReturnsNull()
     {
-        Assert.Null(SettingsFormModel.ToSettings(null, NotSet, Device("SPEAKER"), NotSet, true, true));
-        Assert.Null(SettingsFormModel.ToSettings(Device("BUDS"), NotSet, NotSet, NotSet, true, true));
+        Assert.Null(SettingsFormModel.ToSettings(null, NotSet, Device("SPEAKER"), NotSet, true, true, false));
+        Assert.Null(SettingsFormModel.ToSettings(Device("BUDS"), NotSet, NotSet, NotSet, true, true, false));
+    }
+
+    // ---- タスクバーの残量表示（Issue rurute/inzone-auto-switch#27） ----
+
+    [Fact]
+    public void Create_CarriesShowTaskbarBattery()
+    {
+        var model = SettingsFormModel.Create(Current with { ShowTaskbarBattery = true }, Playback, Capture);
+
+        Assert.True(model.ShowTaskbarBattery);
+    }
+
+    [Fact]
+    public void ToSettings_CarriesShowTaskbarBattery()
+    {
+        var settings = SettingsFormModel.ToSettings(Device("BUDS"), NotSet, Device("SPEAKER"), NotSet, true, true, true);
+
+        Assert.NotNull(settings);
+        Assert.True(settings.ShowTaskbarBattery);
     }
 }

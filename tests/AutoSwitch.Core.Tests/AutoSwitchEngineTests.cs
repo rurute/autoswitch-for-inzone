@@ -436,6 +436,66 @@ public sealed class AutoSwitchEngineTests
         Assert.Equal(HeadsetState.Disconnected, engine.State);
     }
 
+    // ---- 残量の通知（LevelsUpdated、Issue rurute/inzone-auto-switch#27） ----
+
+    [Fact]
+    public void Tick_Connected_RaisesLevelsUpdatedWithLevels()
+    {
+        var engine = StartedEngine();
+        var received = new List<BudsLevels?>();
+        engine.LevelsUpdated += levels => received.Add(levels);
+        Results(new ProbeResult(ProbeStatus.Connected, new BudsLevels(80, 60, null)));
+
+        engine.Tick();
+
+        Assert.Equal([new BudsLevels(80, 60, null)], received);
+    }
+
+    [Fact]
+    public void Tick_Unavailable_RaisesLevelsUpdatedWithNull()
+    {
+        var engine = StartedEngine();
+        var received = new List<BudsLevels?>();
+        engine.LevelsUpdated += levels => received.Add(levels);
+        Results(Unavailable);
+
+        engine.Tick();
+
+        Assert.Equal([null], received);
+    }
+
+    [Fact]
+    public void Tick_LevelsUpdatedHandlerThrows_LogsErrorAndStillSwitches()
+    {
+        var engine = StartedEngine();
+        engine.LevelsUpdated += _ => throw new InvalidOperationException("levels boom");
+        Results(Connected);
+
+        engine.Tick();
+
+        Assert.Equal(HeadsetState.Connected, engine.State);
+        Assert.Equal(["BUDS"], _switcher.Calls);
+        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Error
+            && e.Message.Contains("残量の通知で予期しない例外")
+            && e.Message.Contains("levels boom"));
+    }
+
+    // 問い合わせが取り消しの例外で終わったら、LevelsUpdated も発火しない
+    [Fact]
+    public void Tick_QueryThrowsCancellation_DoesNotRaiseLevelsUpdated()
+    {
+        var engine = StartedEngine();
+        var raised = 0;
+        engine.LevelsUpdated += _ => raised++;
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        _probe.OnQuery = token => token.ThrowIfCancellationRequested();
+
+        Assert.ThrowsAny<OperationCanceledException>(() => engine.Tick(cancellation.Token));
+
+        Assert.Equal(0, raised);
+    }
+
     // ---- 取り消し ----
 
     [Fact]

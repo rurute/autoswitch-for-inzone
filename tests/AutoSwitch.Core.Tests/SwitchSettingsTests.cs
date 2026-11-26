@@ -50,8 +50,33 @@ public sealed class SwitchSettingsTests
         var saved = new SwitchSettings("BUDS", "SPEAKER", "BUDS_MIC", " ", true, false);
 
         Assert.Equal(
-            "設定画面で保存しました: 接続時 再生=BUDS 録音=BUDS_MIC / 切断時 再生=SPEAKER 録音=（未設定） / switchOnConnect=true switchOnDisconnect=false",
+            "設定画面で保存しました: 接続時 再生=BUDS 録音=BUDS_MIC / 切断時 再生=SPEAKER 録音=（未設定） / switchOnConnect=true switchOnDisconnect=false showTaskbarBattery=false",
             saved.DescribeSaved());
+    }
+
+    [Fact]
+    public void From_CopiesShowTaskbarBattery()
+    {
+        Assert.True(SwitchSettings.From(Running with { ShowTaskbarBattery = true }).ShowTaskbarBattery);
+    }
+
+    [Fact]
+    public void ApplyTo_CopiesShowTaskbarBattery()
+    {
+        var saved = SwitchSettings.From(Running) with { ShowTaskbarBattery = true };
+
+        var applied = saved.ApplyTo(Running);
+
+        Assert.False(Running.ShowTaskbarBattery);
+        Assert.Equal(Running with { ShowTaskbarBattery = true }, applied);
+    }
+
+    [Fact]
+    public void DescribeSaved_IncludesShowTaskbarBattery()
+    {
+        var saved = new SwitchSettings("BUDS", "SPEAKER", "", "", true, true, ShowTaskbarBattery: true);
+
+        Assert.EndsWith(" showTaskbarBattery=true", saved.DescribeSaved());
     }
 
     [Fact]

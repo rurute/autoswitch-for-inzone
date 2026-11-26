@@ -8,7 +8,7 @@ namespace AutoSwitch.App;
 /// <summary>
 /// トレイ常駐の本体。UI スレッドで動き、監視は MonitorRunner のスレッドが回す。
 /// 状態変更は監視スレッドから届くので、ハンドルを作った隠し Control 経由で UI スレッドへ渡す。
-/// 後片付けは Dispose に集める（購読の解除 → 設定画面を閉じる → 監視の停止 → アイコンとメニューの解放の順）。
+/// 後片付けは Dispose に集める（購読の解除 → 設定画面を閉じる → タスクバーの残量表示の破棄 → 監視の停止 → アイコンとメニューの解放の順）。
 /// </summary>
 internal sealed class TrayApplicationContext : ApplicationContext
 {
@@ -28,6 +28,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     // 同時に1つだけ開く設定画面（Issue rurute/inzone-auto-switch#9）。閉じたら null に戻す
     private SettingsForm? _settingsForm;
+
+    // タスクバーの残量表示（Issue rurute/inzone-auto-switch#27）。作れなかったときは null のまま常駐を続ける
+    private TaskbarBatteryOverlay? _overlay;
 
     private bool _stopped;
 
@@ -77,6 +80,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             _engine.StateChanged += OnStateChanged;
 
+            // 作れなくても TryCreate が記録して null を返す。構築の失敗（catch → Release → 再送出）にはしない
+            _overlay = TaskbarBatteryOverlay.TryCreate(logger, settings.ShowTaskbarBattery);
+            _engine.LevelsUpdated += OnLevelsUpdated;
+
             _runner = new MonitorRunner(engine, settings, logger, transport);
             _runner.Start();
         }
@@ -112,6 +119,39 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             // 表示の更新に失敗しても監視は続ける
             _logger.Write(LogLevel.Warn, $"トレイの状態表示を更新できません: {ex.Message}");
+        }
+    }
+
+    // 監視スレッドから届く。表示の失敗は監視スレッドへ投げ返さず、UI スレッドの未処理例外にもしない
+    private void OnLevelsUpdated(BudsLevels? levels)
+    {
+        try
+        {
+            if (_stopped || _marshaller.IsDisposed || !_marshaller.IsHandleCreated)
+            {
+                return;
+            }
+
+            _marshaller.BeginInvoke(() =>
+            {
+                try
+                {
+                    if (_stopped)
+                    {
+                        return;
+                    }
+
+                    _overlay?.SetLevels(levels);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Write(LogLevel.Warn, $"タスクバーの残量表示を更新できません: {ex.Message}");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.Write(LogLevel.Warn, $"タスクバーの残量表示を更新できません: {ex.Message}");
         }
     }
 
@@ -253,7 +293,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>
-    /// 設定画面の保存。config.json の6項目を書き換え、成功したら動作中の設定へ反映する（spec §5・§6）。
+    /// 設定画面の保存。config.json の7項目を書き換え、成功したら動作中の設定へ反映する（spec §5・§6）。
     /// その場ではデバイスを切り替えない。失敗したら理由を返し、動作中の設定は変えない
     /// </summary>
     private string? SaveSettings(SwitchSettings values)
@@ -262,12 +302,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (!result.Succeeded)
         {
             var error = result.Error ?? "詳細不明";
-            _logger.Write(LogLevel.Warn, $"設定を保存できません: {error}");
+            // ログにはユーザー名を含むパスを残さない。画面に返す理由はパスのまま（Open と同じ扱い）
+            _logger.Write(LogLevel.Warn, $"設定を保存できません: {AppPaths.ForLog(error)}");
             return error;
         }
 
         // 入れ替えるのは UI スレッドだけなので、読んでから入れ替えるまでに他から変わることはない
         _engine.Settings.Replace(values.ApplyTo(_engine.Settings.Current));
+        _overlay?.SetEnabled(values.ShowTaskbarBattery);
         _logger.Write(LogLevel.Info, values.DescribeSaved());
         return null;
     }
@@ -312,11 +354,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _stopped = true;
         _engine.StateChanged -= OnStateChanged;
+        _engine.LevelsUpdated -= OnLevelsUpdated;
         _menu.Opening -= OnMenuOpening;
         _notifyIcon.DoubleClick -= OnNotifyIconDoubleClick;
         // 設定画面は保存せずに閉じる。監視の停止より前に行う（spec §4「終了との関係」）
         _settingsForm?.Dispose();
         _settingsForm = null;
+        // 窓とタイマーは UI スレッドの資源なので、監視の停止より前に捨てる
+        _overlay?.Dispose();
+        _overlay = null;
         _runner?.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();

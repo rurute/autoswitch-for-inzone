@@ -16,7 +16,7 @@ public sealed class SystemClock : IClock
 /// （startupSyncMaxAgeMinutes が 0 なら判定だけ）。それ以外は状態が変わったときだけ切り替える。
 /// 読めないときは状態を変えず、idle 間隔で探し直す。ログは読めなくなったとき・戻ったときに 1 回ずつ。
 /// 切り替えの例外と、問い合わせの取り消しの例外は外へ出す（監視ループが扱う）。
-/// 切り替えの6項目（SwitchSettings）は Settings から切り替えのたびに読み、ほかの項目は起動時の値を使い続ける（Issue rurute/inzone-auto-switch#9）。
+/// 切り替えの6項目（SwitchSettings の7項目のうち、エンジンが使わない showTaskbarBattery を除いたもの）は Settings から切り替えのたびに読み、ほかの項目は起動時の値を使い続ける（Issue rurute/inzone-auto-switch#9）。
 /// </summary>
 public sealed class AutoSwitchEngine
 {
@@ -53,7 +53,7 @@ public sealed class AutoSwitchEngine
     }
 
     /// <summary>
-    /// 動作中の設定。入れ替えると、次に始まる切り替えから6項目の新しい値を使う。
+    /// 動作中の設定。入れ替えると、次に始まる切り替えから切り替えの6項目の新しい値を使う。
     /// ポーリング間隔や起動時の切り替えの有無など、6項目以外はコンストラクタで受け取った値を使い続ける
     /// </summary>
     public LiveSettings Settings { get; }
@@ -68,6 +68,12 @@ public sealed class AutoSwitchEngine
 
     /// <summary>問い合わせを終えるたびに（取り消しの例外で終わったときを除く）、監視スレッドから発火する</summary>
     public event Action<ProbeStatus>? QueryCompleted;
+
+    /// <summary>
+    /// 問い合わせを終えるたびに（取り消しの例外で終わったときを除く）、QueryCompleted の直後に監視スレッドから発火する。
+    /// 引数は問い合わせで読めた残量。読めないとき（Unavailable と時間切れ）は null（Issue rurute/inzone-auto-switch#27）
+    /// </summary>
+    public event Action<BudsLevels?>? LevelsUpdated;
 
     private void SetState(HeadsetState newState)
     {
@@ -180,7 +186,7 @@ public sealed class AutoSwitchEngine
         SwitchFor(newState, token);
     }
 
-    // 問い合わせの前後でイベントを発火する。取り消しの例外は QueryCompleted を発火せずにそのまま外へ出す
+    // 問い合わせの前後でイベントを発火する。取り消しの例外は QueryCompleted・LevelsUpdated を発火せずにそのまま外へ出す
     private ProbeResult Query(CancellationToken token)
     {
         try
@@ -203,6 +209,16 @@ public sealed class AutoSwitchEngine
         catch (Exception ex)
         {
             _logger.Write(LogLevel.Error, $"問い合わせ完了の通知で予期しない例外が発生しました: {ex.Message}");
+        }
+
+        try
+        {
+            LevelsUpdated?.Invoke(result.Levels);
+        }
+        catch (Exception ex)
+        {
+            // 残量の表示の失敗で監視と切り替えを止めない
+            _logger.Write(LogLevel.Error, $"残量の通知で予期しない例外が発生しました: {ex.Message}");
         }
 
         return result;

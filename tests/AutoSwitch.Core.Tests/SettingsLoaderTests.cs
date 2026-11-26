@@ -418,10 +418,11 @@ public sealed class SettingsLoaderTests : IDisposable
         Assert.Equal(
             [
                 "budsDevice", "speakerDevice", "switchOnConnect", "switchOnDisconnect", "pollIntervalSeconds",
-                "idlePollIntervalSeconds", "startupSyncMaxAgeMinutes", "logLevel", "maxLogSizeKB",
+                "idlePollIntervalSeconds", "startupSyncMaxAgeMinutes", "logLevel", "maxLogSizeKB", "showTaskbarBattery",
             ],
             created.RootElement.EnumerateObject().Select(p => p.Name));
         Assert.Equal(2, created.RootElement.GetProperty("pollIntervalSeconds").GetInt32());
+        Assert.False(created.RootElement.GetProperty("showTaskbarBattery").GetBoolean());
 
         var result = SettingsLoader.Load(path);
         Assert.Empty(result.Warnings);
@@ -548,5 +549,38 @@ public sealed class SettingsLoaderTests : IDisposable
         Assert.Equal(
             "録音の切り替え: 接続時=Buds Mic / 切断時=（未設定）",
             (AppSettings.Default with { BudsInputDevice = "Buds Mic", SpeakerInputDevice = "  " }).DescribeCaptureSwitching());
+    }
+
+    // ---- タスクバーの残量表示（Issue rurute/inzone-auto-switch#27） ----
+
+    [Fact]
+    public void Default_ShowTaskbarBatteryIsFalse() => Assert.False(AppSettings.Default.ShowTaskbarBattery);
+
+    [Fact]
+    public void Load_ShowTaskbarBatteryMissing_DefaultsFalse()
+    {
+        var result = LoadContent("""{ "budsDevice": "X" }""");
+
+        Assert.Empty(result.Warnings);
+        Assert.False(result.Settings.ShowTaskbarBattery);
+    }
+
+    [Fact]
+    public void Load_ShowTaskbarBatteryTrue_ReadsTrue()
+    {
+        var result = LoadContent("""{ "showTaskbarBattery": true }""");
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(AppSettings.Default with { ShowTaskbarBattery = true }, result.Settings);
+    }
+
+    [Fact]
+    public void Load_ShowTaskbarBatteryNotBool_WarnsAndFalse()
+    {
+        var result = LoadContent("""{ "showTaskbarBattery": "yes" }""");
+
+        Assert.False(result.Settings.ShowTaskbarBattery);
+        var warning = Assert.Single(result.Warnings);
+        Assert.Contains("showTaskbarBattery", warning);
     }
 }

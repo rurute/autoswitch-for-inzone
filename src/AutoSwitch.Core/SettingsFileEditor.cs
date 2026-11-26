@@ -18,19 +18,20 @@ public sealed record SettingsSaveResult(bool Succeeded, string? Error)
 }
 
 /// <summary>
-/// 設定画面のための config.json の読み込みと、6項目だけの書き換え（Issue rurute/inzone-auto-switch#9、spec §5）。
+/// 設定画面のための config.json の読み込みと、7項目だけの書き換え（Issue rurute/inzone-auto-switch#9、spec §5。7項目目の showTaskbarBattery は Issue rurute/inzone-auto-switch#27）。
 /// ファイルの読み書きの失敗は結果に変換し、例外を外へ出さない。引数の誤り（null・空のパス、null の値）はプログラムの誤りなので例外にする。
 /// </summary>
 public static class SettingsFileEditor
 {
-    // spec §3 の表の順。ファイルに無いキーはこの順で最後に足す
+    // spec §3 の表の順。showTaskbarBattery（Issue rurute/inzone-auto-switch#27）は最後。ファイルに無いキーはこの順で最後に足す
     private static readonly string[] SwitchKeys =
     [
         "budsDevice", "budsInputDevice", "speakerDevice", "speakerInputDevice", "switchOnConnect", "switchOnDisconnect",
+        "showTaskbarBattery",
     ];
 
     /// <summary>
-    /// 6項目は SettingsLoader.Load と同じ値を返す。ファイルが無い・読めない・解析できない・ルートがオブジェクトでないときは
+    /// 7項目は SettingsLoader.Load と同じ値を返す。ファイルが無い・読めない・解析できない・ルートがオブジェクトでないときは
     /// Problem に理由を入れる（Load はこれらの場合も既定値を返すため、保存できるかは別に判定する）
     /// </summary>
     public static SettingsEditSource Open(string path)
@@ -51,7 +52,7 @@ public static class SettingsFileEditor
     }
 
     /// <summary>
-    /// 保存の直前に読み直し、6項目のキーだけを書き換える。同じフォルダの一時ファイルに書いてから名前変更で置き換える。
+    /// 保存の直前に読み直し、7項目のキーだけを書き換える。同じフォルダの一時ファイルに書いてから名前変更で置き換える。
     /// 失敗しても config.json は変わらない
     /// </summary>
     public static SettingsSaveResult Save(string path, SwitchSettings values)
@@ -153,7 +154,7 @@ public static class SettingsFileEditor
                 var key = SwitchKeys.FirstOrDefault(k => string.Equals(k, property.Name, StringComparison.OrdinalIgnoreCase));
                 if (key is null)
                 {
-                    // 6項目以外はキー名も値もそのまま（数値の表記、未知のキー、重複を含む）
+                    // 7項目以外はキー名も値もそのまま（数値の表記、未知のキー、重複を含む）
                     property.WriteTo(writer);
                 }
                 else if (written.Add(key))
@@ -195,8 +196,11 @@ public static class SettingsFileEditor
             case "switchOnDisconnect":
                 writer.WriteBoolean(key, values.SwitchOnDisconnect);
                 break;
+            case "showTaskbarBattery":
+                writer.WriteBoolean(key, values.ShowTaskbarBattery);
+                break;
             default:
-                throw new ArgumentOutOfRangeException(nameof(key), key, "6項目のキーではありません。");
+                throw new ArgumentOutOfRangeException(nameof(key), key, "7項目のキーではありません。");
         }
     }
 

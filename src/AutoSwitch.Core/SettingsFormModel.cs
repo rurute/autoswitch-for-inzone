@@ -29,7 +29,7 @@ public sealed class SettingsFormModel
 
     private SettingsFormModel(
         DeviceSelection budsPlayback, DeviceSelection budsCapture, DeviceSelection speakerPlayback, DeviceSelection speakerCapture,
-        bool switchOnConnect, bool switchOnDisconnect, IReadOnlyList<string> notices)
+        bool switchOnConnect, bool switchOnDisconnect, bool showTaskbarBattery, IReadOnlyList<string> notices)
     {
         BudsPlayback = budsPlayback;
         BudsCapture = budsCapture;
@@ -37,6 +37,7 @@ public sealed class SettingsFormModel
         SpeakerCapture = speakerCapture;
         SwitchOnConnect = switchOnConnect;
         SwitchOnDisconnect = switchOnDisconnect;
+        ShowTaskbarBattery = showTaskbarBattery;
         Notices = notices;
     }
 
@@ -51,6 +52,9 @@ public sealed class SettingsFormModel
     public bool SwitchOnConnect { get; }
 
     public bool SwitchOnDisconnect { get; }
+
+    /// <summary>タスクバーに残量を表示するか（Issue rurute/inzone-auto-switch#27）</summary>
+    public bool ShowTaskbarBattery { get; }
 
     /// <summary>画面の上部に出す、一覧を取得できなかった流れの知らせ（再生 → 録音の順）</summary>
     public IReadOnlyList<string> Notices { get; }
@@ -78,15 +82,16 @@ public sealed class SettingsFormModel
             Select(current.SpeakerInputDevice, capture, allowNotSet: true),
             current.SwitchOnConnect,
             current.SwitchOnDisconnect,
+            current.ShowTaskbarBattery,
             notices);
     }
 
     /// <summary>
-    /// 選んだ結果から保存する6項目を作る。再生の2項目が選ばれていない・空なら null（spec §7）。録音の未選択は未設定として扱う
+    /// 選んだ結果から保存する7項目を作る。再生の2項目が選ばれていない・空なら null（spec §7）。録音の未選択は未設定として扱う
     /// </summary>
     public static SwitchSettings? ToSettings(
         DeviceChoice? budsPlayback, DeviceChoice? budsCapture, DeviceChoice? speakerPlayback, DeviceChoice? speakerCapture,
-        bool switchOnConnect, bool switchOnDisconnect)
+        bool switchOnConnect, bool switchOnDisconnect, bool showTaskbarBattery)
     {
         if (string.IsNullOrWhiteSpace(budsPlayback?.Value) || string.IsNullOrWhiteSpace(speakerPlayback?.Value))
         {
@@ -99,7 +104,8 @@ public sealed class SettingsFormModel
             CaptureValue(budsCapture),
             CaptureValue(speakerCapture),
             switchOnConnect,
-            switchOnDisconnect);
+            switchOnDisconnect,
+            showTaskbarBattery);
     }
 
     private static string CaptureValue(DeviceChoice? choice) =>

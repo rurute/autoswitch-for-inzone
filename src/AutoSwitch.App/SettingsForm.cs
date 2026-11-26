@@ -18,6 +18,7 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox _speakerCapture = NewCombo();
     private readonly CheckBox _switchOnConnect = new() { Text = "接続したら切り替える(&C)", AutoSize = true };
     private readonly CheckBox _switchOnDisconnect = new() { Text = "切断したら切り替える(&D)", AutoSize = true };
+    private readonly CheckBox _showTaskbarBattery = new() { Text = "タスクバーに残量を表示する(&T)", AutoSize = true };
     private readonly Func<SwitchSettings, string?> _save;
 
     /// <param name="fileProblem">null でなければ上部に出し、保存を押せなくする</param>
@@ -44,6 +45,7 @@ internal sealed class SettingsForm : Form
         Bind(_speakerCapture, model.SpeakerCapture);
         _switchOnConnect.Checked = model.SwitchOnConnect;
         _switchOnDisconnect.Checked = model.SwitchOnDisconnect;
+        _showTaskbarBattery.Checked = model.ShowTaskbarBattery;
 
         var layout = new FlowLayoutPanel
         {
@@ -73,6 +75,7 @@ internal sealed class SettingsForm : Form
 
         layout.Controls.Add(Group("Buds を接続したとき", _switchOnConnect, ("再生デバイス(&P)", _budsPlayback), ("録音デバイス(&R)", _budsCapture)));
         layout.Controls.Add(Group("Buds を切断したとき", _switchOnDisconnect, ("再生デバイス(&Y)", _speakerPlayback), ("録音デバイス(&M)", _speakerCapture)));
+        layout.Controls.Add(_showTaskbarBattery);
 
         var saveButton = new Button { Text = "保存(&S)", AutoSize = true, Enabled = fileProblem is null };
         var cancelButton = new Button { Text = "キャンセル", AutoSize = true };
@@ -142,7 +145,8 @@ internal sealed class SettingsForm : Form
             _speakerPlayback.SelectedItem as DeviceChoice,
             _speakerCapture.SelectedItem as DeviceChoice,
             _switchOnConnect.Checked,
-            _switchOnDisconnect.Checked);
+            _switchOnDisconnect.Checked,
+            _showTaskbarBattery.Checked);
         if (settings is null)
         {
             MessageBox.Show(this, "接続時と切断時の再生デバイスを選んでください。", Caption, MessageBoxButtons.OK, MessageBoxIcon.Warning);

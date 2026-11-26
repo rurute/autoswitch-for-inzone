@@ -72,12 +72,14 @@ public static class SettingsLoader
             logLevel ?? AppSettings.Default.LogLevel,
             values.MaxLogSizeKB,
             values.BudsInputDevice,
-            values.SpeakerInputDevice);
+            values.SpeakerInputDevice,
+            values.ShowTaskbarBattery);
         return new SettingsLoadResult(settings, warnings);
     }
 
     /// <summary>
     /// ファイルが無ければ、旧版 config.json のキー順から actionLogPath を抜き、AppSettings.Default の値で BOM 付き UTF-8 の既定ファイルを作る。
+    /// 末尾に showTaskbarBattery（Issue rurute/inzone-auto-switch#27）を書き、手で編集するときに項目に気づけるようにする。
     /// 作成したら true。既存は上書きしない。失敗は例外。
     /// </summary>
     public static bool CreateDefaultFileIfMissing(string path)
@@ -117,6 +119,7 @@ public static class SettingsLoader
             writer.WriteNumber("startupSyncMaxAgeMinutes", d.StartupSyncMaxAgeMinutes);
             writer.WriteString("logLevel", d.LogLevel.ToString());
             writer.WriteNumber("maxLogSizeKB", d.MaxLogSizeKB);
+            writer.WriteBoolean("showTaskbarBattery", d.ShowTaskbarBattery);
             writer.WriteEndObject();
         }
         stream.Write("\n"u8);
@@ -193,6 +196,10 @@ public static class SettingsLoader
             else if (Is(key, "speakerInputDevice"))
             {
                 values.SpeakerInputDevice = ReadOptionalString(key, value, warnings);
+            }
+            else if (Is(key, "showTaskbarBattery"))
+            {
+                values.ShowTaskbarBattery = ReadBool(key, value, values.ShowTaskbarBattery, d.ShowTaskbarBattery, warnings);
             }
             else
             {
@@ -286,5 +293,6 @@ public static class SettingsLoader
         public int MaxLogSizeKB { get; set; } = AppSettings.Default.MaxLogSizeKB;
         public string BudsInputDevice { get; set; } = AppSettings.Default.BudsInputDevice;
         public string SpeakerInputDevice { get; set; } = AppSettings.Default.SpeakerInputDevice;
+        public bool ShowTaskbarBattery { get; set; } = AppSettings.Default.ShowTaskbarBattery;
     }
 }
