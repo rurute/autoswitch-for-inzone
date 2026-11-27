@@ -1,0 +1,47 @@
+name: Build (manual)
+
+# ブランチを試すために、トレイ版を dotnet publish して workflow の artifact に置く。
+# Release もタグも作らない。
+#
+#   gh workflow run build.yml -R rurute/autoswitch-for-inzone --ref <branch>
+#   gh run watch -R rurute/autoswitch-for-inzone
+#   gh run download -R rurute/autoswitch-for-inzone -D <展開先>
+#
+# 中身は scripts/Install-TrayApp.ps1 が配置するものと同じ（ランタイムは同梱しない。.NET 10 Desktop Runtime が要る）。
+# exe の製品バージョンと起動ログに、ビルドしたコミットの印が付く。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Publish
+        run: dotnet publish src/AutoSwitch.App/AutoSwitch.App.csproj -c Release --output publish
+
+      # feat/x のようなブランチ名の「/」は artifact の名前に使えない
+      - name: Name the artifact
+        shell: bash
+        run: |
+          branch="${GITHUB_REF_NAME//\//-}"
+          echo "ARTIFACT_NAME=autoswitch-for-inzone-${branch}-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: publish/
+          if-no-files-found: error
+          retention-days: 14
