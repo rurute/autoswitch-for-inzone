@@ -65,6 +65,7 @@ Start-Process "$env:LOCALAPPDATA\AutoSwitchForInzone\bin\AutoSwitch.App.exe"
 | 設定ファイルを開く(&C) | `config.json` を開く |
 | ログフォルダを開く(&L) | ログのフォルダを開く |
 | Windows ログオン時の自動起動(&A) | 自動起動の ON/OFF |
+| AutoSwitch for INZONE 0.1.0 | バージョン番号（押せない）。不具合を報告するときに添える |
 | 終了(&X) | アプリを終了する |
 
 ## 設定
