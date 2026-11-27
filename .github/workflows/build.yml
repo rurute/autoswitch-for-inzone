@@ -12,8 +12,6 @@ name: Build (manual)
 
 on:
   workflow_dispatch:
-  push:  # 一時的: workflow_dispatch は main に入るまで呼べないので、このブランチで一度だけ試す
-    branches: [feat/github-actions]
 
 permissions:
   contents: read
