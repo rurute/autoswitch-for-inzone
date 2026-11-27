@@ -3,6 +3,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- バージョン番号の元はここ 1 か所。exe のプロパティ、起動時のログ、トレイメニューに出る。
+         SDK が InformationalVersion の「+」の後ろにコミットのハッシュを付ける（AppVersion が 7 桁に縮める） -->
+    <Version>0.1.0</Version>
   </PropertyGroup>
 
   <!--

@@ -42,6 +42,7 @@ Start-Process "$env:LOCALAPPDATA\AutoSwitchForInzone\bin\AutoSwitch.App.exe"
 
 `%LOCALAPPDATA%\AutoSwitchForInzone\logs\AutoSwitchForInzone.log`。トレイメニューの「ログフォルダを開く(&L)」からも開ける。各行は `yyyy-MM-dd HH:mm:ss.fff [レベル] メッセージ` の形式である。見どころ:
 
+- `AutoSwitch for INZONE 0.1.0+adba3fe を開始します。` — 起動時に `[INFO]` で1行出る。バージョン番号と、ビルドしたコミットの短いハッシュ（`+` の後ろ）が分かる。トレイメニューには番号だけが出る
 - `[ERROR]` — 切り替えや自動起動の登録に失敗した行
 - `[WARN]` — Buds のドングルを読めない、登録状態を読み取れない、といった行
 - `自動起動:` — 起動時に Run キーを読めたときに `[INFO]` で1行出る。そのとき Run キーがどうだったかが分かる（例: `自動起動: 有効（HKCU\Software\Microsoft\Windows\CurrentVersion\Run）`）。読めなかったときはこの行の代わりに `[WARN] 自動起動の登録状態を読み取れません` が出る。また `config.json` の `logLevel` を `Warn` か `Error` にしているとこの `[INFO]` の行は落ちる（既定は `Info`）。**この行が無いことは、アプリが起動しなかった証拠にはならない。** いま動いているかどうかは、`@(Get-Process -Name 'AutoSwitch.App' -ErrorAction SilentlyContinue).Count` で見る

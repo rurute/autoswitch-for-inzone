@@ -67,7 +67,7 @@ internal static class Program
                 logger.Write(LogLevel.Warn, warning);
             }
 
-            logger.Write(LogLevel.Info, "AutoSwitch for INZONE を開始します。");
+            logger.Write(LogLevel.Info, $"AutoSwitch for INZONE {AppVersion.ForLog(AppVersion.Current)} を開始します。");
             logger.Write(LogLevel.Info, "監視対象: INZONE Buds の USB ドングル（054c:0ec2）");
             logger.Write(LogLevel.Info, settings.DescribeCaptureSwitching());
 

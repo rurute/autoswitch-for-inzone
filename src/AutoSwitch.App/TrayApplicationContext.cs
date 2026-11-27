@@ -66,6 +66,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _menu.Items.Add(_autoStartItem);
 
             _menu.Items.Add(new ToolStripSeparator());
+            // 不具合の報告でどの版かを伝えられるように、番号だけを押せない項目で出す（コミットの印はログにだけ出す）
+            _menu.Items.Add(new ToolStripMenuItem($"AutoSwitch for INZONE {AppVersion.ForDisplay(AppVersion.Current)}") { Enabled = false });
             _menu.Items.Add("終了(&X)", null, (_, _) => ExitApplication());
 
             // レジストリは regedit など外からも変えられるので、開くたびに読み直す
