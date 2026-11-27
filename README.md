@@ -173,6 +173,13 @@ dotnet test --project tests\AutoSwitch.Core.Tests\AutoSwitch.Core.Tests.csproj
 dotnet test --project tests\AutoSwitch.App.Tests\AutoSwitch.App.Tests.csproj
 ```
 
+GitHub Actions では、push と PR のたびに `.github/workflows/ci.yml` がビルドとテストを流す。ブランチを手元で試したいときは、`.github/workflows/build.yml` を手動で走らせると、`dotnet publish` した結果が artifact として 14 日残る（ランタイムは同梱しない）。
+
+```powershell
+gh workflow run build.yml -R rurute/autoswitch-for-inzone --ref <ブランチ>
+gh run download -R rurute/autoswitch-for-inzone -D <展開先>
+```
+
 | プロジェクト | 役割 |
 |---|---|
 | `src/AutoSwitch.Core` | ドングルとのやり取りの形（問い合わせ・返答の照合）・判定・状態遷移・設定。実機なしでテストできる |
